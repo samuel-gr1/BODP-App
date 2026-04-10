@@ -1,0 +1,27 @@
+kind = "mobile"
+previewPath = "/"
+title = "Zemen Bank Fit & Proper"
+version = "1.0.0"
+id = "artifacts/zemen-bank-app"
+router = "expo-domain"
+
+[[integratedSkills]]
+name = "expo"
+version = "1.0.0"
+
+[[services]]
+ensurePreviewReachable = "/status"
+name = "expo"
+paths = [ "/" ]
+localPort = 24947
+
+[services.development]
+run = "pnpm --filter @workspace/zemen-bank-app run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/zemen-bank-app", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/zemen-bank-app", "run", "serve" ]
+
+[services.env]
+PORT = "24947"
+BASE_PATH = "/"
