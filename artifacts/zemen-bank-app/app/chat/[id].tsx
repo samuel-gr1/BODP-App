@@ -4,6 +4,8 @@ import { Stack, useLocalSearchParams } from "expo-router";
 import React, { useState, useRef, useEffect, useMemo } from "react";
 import {
   FlatList,
+  Keyboard,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   StyleSheet,
@@ -11,11 +13,6 @@ import {
   TextInput,
   View,
 } from "react-native";
-import {
-  KeyboardAvoidingView,
-  useReanimatedKeyboardAnimation,
-} from "react-native-keyboard-controller";
-import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApi } from "@/hooks/useApi";
 import { useAuth } from "@/context/AuthContext";
@@ -51,7 +48,6 @@ export default function ChatConversationScreen() {
   const { user } = useAuth();
   const qc = useQueryClient();
   const flatListRef = useRef<FlatList>(null);
-  const { height: kbHeight } = useReanimatedKeyboardAnimation();
 
   const [message, setMessage] = useState("");
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -138,11 +134,6 @@ export default function ChatConversationScreen() {
       .join("")
       .toUpperCase()
       .slice(0, 2);
-
-  // Animated padding to lift list when keyboard rises (so last message is visible)
-  const listPadAnimated = useAnimatedStyle(() => ({
-    paddingBottom: Math.max(0, -kbHeight.value),
-  }));
 
   const renderMessage = ({ item, index }: { item: Message; index: number }) => {
     const own = isOwnMessage(item);
@@ -353,11 +344,11 @@ export default function ChatConversationScreen() {
       />
 
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={styles.flex}
-        keyboardVerticalOffset={0}
+        keyboardVerticalOffset={Platform.OS === "ios" ? insets.top + 44 : 0}
       >
-        <Animated.View style={[styles.flex, listPadAnimated]}>
+        <View style={styles.flex}>
           {messagesLoading ? (
             <LoadingSpinner />
           ) : (
@@ -404,7 +395,7 @@ export default function ChatConversationScreen() {
               style={styles.flex}
             />
           )}
-        </Animated.View>
+        </View>
 
         {/* Reply Preview */}
         {replyingTo && (
