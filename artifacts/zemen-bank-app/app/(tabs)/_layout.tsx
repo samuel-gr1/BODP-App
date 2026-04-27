@@ -59,7 +59,7 @@ function ClassicTabLayout() {
   useEffect(() => {
     const fetchUnreadCount = async () => {
       try {
-        const response = await request<{ unreadCount: number }>("/chats/unread-count", "GET");
+        const response = await request<{ unreadCount: number }>("/chats/unread-count", { method: "GET" });
         setUnreadCount(response.unreadCount || 0);
       } catch {
         // Silently fail - unread badge is not critical
