@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "2c1d1e0d-d336-4824-ae3a-109ce68070be"
+      }
+    },
+    "android": {
+      "package": "com.saminemgr.bodp"
+    }
+  }
+}

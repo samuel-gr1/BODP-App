@@ -305,6 +305,20 @@ export default function ChatConversationScreen() {
     });
   };
 
+  // Build full URL from potentially relative attachment URL
+  const buildFileUrl = (url: string): string => {
+    if (!url) return "";
+    // If already absolute URL, return as-is
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      return url;
+    }
+    // If relative path, prepend API_BASE (removing /api suffix if present)
+    const base = API_BASE?.replace(/\/api\/?$/, "") || "";
+    // Ensure url starts with /
+    const path = url.startsWith("/") ? url : `/${url}`;
+    return `${base}${path}`;
+  };
+
   const playVoice = async (att: Attachment) => {
     try {
       if (soundRef.current) {
@@ -315,7 +329,8 @@ export default function ChatConversationScreen() {
         setPlayingId(null);
         return;
       }
-      const { sound } = await Audio.Sound.createAsync({ uri: att.url });
+      const fileUrl = buildFileUrl(att.url);
+      const { sound } = await Audio.Sound.createAsync({ uri: fileUrl });
       soundRef.current = sound;
       setPlayingId(att.id);
       sound.setOnPlaybackStatusUpdate((status) => {
@@ -576,19 +591,20 @@ export default function ChatConversationScreen() {
   const renderAttachment = (att: Attachment, own: boolean) => {
     const isImage = att.fileType.startsWith("image");
     const isAudio = att.fileType.startsWith("audio");
+    const fileUrl = buildFileUrl(att.url);
 
     if (isImage) {
       return (
         <Pressable
           key={att.id}
-          onPress={() => setPreviewImg(att.url)}
+          onPress={() => setPreviewImg(fileUrl)}
           style={[
             styles.imageWrap,
             { alignSelf: own ? "flex-end" : "flex-start" },
           ]}
         >
           <Image
-            source={{ uri: att.url }}
+            source={{ uri: fileUrl }}
             style={styles.image}
             contentFit="cover"
             transition={150}
