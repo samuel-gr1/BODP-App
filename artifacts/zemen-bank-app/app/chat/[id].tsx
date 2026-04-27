@@ -11,7 +11,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  KeyboardAvoidingView,
+  Keyboard,
   Modal,
   Platform,
   Pressable,
@@ -81,6 +81,33 @@ export default function ChatConversationScreen() {
   // Voice playback state
   const soundRef = useRef<Audio.Sound | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
+
+  // Keyboard tracking — manual listeners are far more reliable than
+  // KeyboardAvoidingView, especially on Android and inside modal stacks.
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    const showEvt =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showSub = Keyboard.addListener(showEvt, (e) => {
+      // On Android the reported height already accounts for the safe-area;
+      // on iOS we subtract the home-indicator inset because we still apply it.
+      const h = e.endCoordinates?.height ?? 0;
+      setKeyboardHeight(
+        Platform.OS === "ios" ? Math.max(0, h - insets.bottom) : h,
+      );
+      setTimeout(
+        () => listRef.current?.scrollToEnd({ animated: true }),
+        80,
+      );
+    });
+    const hideSub = Keyboard.addListener(hideEvt, () => setKeyboardHeight(0));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [insets.bottom]);
 
   const chatQuery = useQuery({
     queryKey: ["chat", id],
@@ -762,11 +789,7 @@ export default function ChatConversationScreen() {
         }}
       />
 
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={Platform.OS === "ios" ? insets.top + 44 : 0}
-      >
+      <View style={[styles.flex, { marginBottom: keyboardHeight }]}>
         <View style={styles.flex}>
           {messagesQuery.isLoading ? (
             <LoadingSpinner />
@@ -895,7 +918,7 @@ export default function ChatConversationScreen() {
               {
                 backgroundColor: colors.card,
                 borderTopColor: colors.border,
-                paddingBottom: Math.max(insets.bottom, 8),
+                paddingBottom: keyboardHeight > 0 ? 8 : Math.max(insets.bottom, 8),
               },
             ]}
           >
@@ -927,7 +950,7 @@ export default function ChatConversationScreen() {
               {
                 backgroundColor: colors.card,
                 borderTopColor: colors.border,
-                paddingBottom: Math.max(insets.bottom, 8),
+                paddingBottom: keyboardHeight > 0 ? 8 : Math.max(insets.bottom, 8),
               },
             ]}
           >
@@ -992,7 +1015,7 @@ export default function ChatConversationScreen() {
             )}
           </View>
         )}
-      </KeyboardAvoidingView>
+      </View>
 
       <Modal
         visible={!!previewImg}
