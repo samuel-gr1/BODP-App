@@ -20,6 +20,8 @@ export default function ChatLayout() {
         options={{
           title: "Conversation",
           headerShown: true,
+          presentation: "fullScreenModal",
+          animation: "slide_from_right",
         }}
       />
       <Stack.Screen
