@@ -1,10 +1,9 @@
 import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
-import React, { useState, useCallback } from "react";
+import React, { useState, useMemo } from "react";
 import {
   FlatList,
-  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -14,391 +13,372 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useApi } from "@/hooks/useApi";
-import { useColors } from "@/hooks/useColors";
-import { Card } from "@/components/ui/Card";
+
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useAuth } from "@/context/AuthContext";
+import { useApi } from "@/hooks/useApi";
+import { useColors } from "@/hooks/useColors";
 
 type ChatType = "INDIVIDUAL" | "GROUP" | "GLOBAL";
 
-interface ChatMember {
+interface Member {
   id: string;
   userId: string;
-  role: string;
-  user: {
-    id: string;
-    name: string;
-    email: string;
-  };
+  user: { id: string; name: string; email: string };
 }
 
-interface ChatAttachment {
-  id: string;
-  fileType: string;
-  fileName: string;
-}
-
-interface ChatMessage {
+interface LastMessage {
   id: string;
   content?: string;
   createdAt: string;
-  sender: {
-    id: string;
-    name: string;
-    email: string;
-  };
-  attachments?: ChatAttachment[];
+  sender: { id: string; name: string };
+  attachments?: { id: string; fileType: string; fileName: string }[];
 }
 
 interface Chat {
   id: string;
   name?: string;
   type: ChatType;
-  description?: string;
   lastMessageAt: string;
-  members: ChatMember[];
-  messages?: ChatMessage[];
-  _count?: {
-    members: number;
-    messages: number;
-  };
+  members: Member[];
+  messages?: LastMessage[];
+  unreadCount?: number;
+  _count?: { members: number; messages: number };
 }
 
-type TabType = "INDIVIDUAL" | "GROUP" | "GLOBAL";
+const TABS: { key: ChatType; label: string; icon: keyof typeof Feather.glyphMap }[] = [
+  { key: "INDIVIDUAL", label: "Direct", icon: "user" },
+  { key: "GROUP", label: "Groups", icon: "users" },
+  { key: "GLOBAL", label: "Global", icon: "globe" },
+];
 
-export default function ChatScreen() {
+export default function ChatListScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { request } = useApi();
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<TabType>("INDIVIDUAL");
+  const [activeTab, setActiveTab] = useState<ChatType>("INDIVIDUAL");
   const [search, setSearch] = useState("");
 
-  // Fetch regular chats (INDIVIDUAL & GROUP)
-  const { data, isLoading, refetch } = useQuery({
+  const listQuery = useQuery({
     queryKey: ["chats", activeTab],
     queryFn: () => request<{ chats: Chat[] }>(`/chats?type=${activeTab}`),
-    retry: 1,
     enabled: activeTab !== "GLOBAL",
+    refetchInterval: 5000,
   });
 
-  // Fetch global chat separately
-  const { data: globalData, isLoading: globalLoading } = useQuery({
-    queryKey: ["global-chat"],
+  const globalQuery = useQuery({
+    queryKey: ["chats", "global"],
     queryFn: () => request<{ chat: Chat }>("/chats/global"),
-    retry: 1,
     enabled: activeTab === "GLOBAL",
+    refetchInterval: 5000,
   });
 
-  const chats = activeTab === "GLOBAL"
-    ? (globalData?.chat ? [globalData.chat] : [])
-    : (data?.chats ?? []);
+  const chats: Chat[] =
+    activeTab === "GLOBAL"
+      ? globalQuery.data?.chat
+        ? [globalQuery.data.chat]
+        : []
+      : listQuery.data?.chats ?? [];
 
-  const filteredChats = chats.filter((chat) => {
-    if (!search) return true;
-    const searchLower = search.toLowerCase();
-    const chatName = getChatName(chat, user?.id).toLowerCase();
-    return chatName.includes(searchLower);
-  });
+  const isLoading =
+    activeTab === "GLOBAL" ? globalQuery.isLoading : listQuery.isLoading;
+  const refetch = activeTab === "GLOBAL" ? globalQuery.refetch : listQuery.refetch;
 
-  const getChatName = (chat: Chat, currentUserId?: string): string => {
+  const getName = (chat: Chat): string => {
     if (chat.name) return chat.name;
     if (chat.type === "GLOBAL") return "Global Chat";
     if (chat.type === "INDIVIDUAL") {
-      const otherMember = chat.members.find((m) => m.userId !== currentUserId);
-      return otherMember?.user?.name || "Unknown";
+      const other = chat.members.find((m) => m.userId !== user?.id);
+      return other?.user?.name || "Unknown";
     }
-    return `Group (${chat._count?.members || chat.members.length})`;
+    return `Group · ${chat._count?.members ?? chat.members.length}`;
   };
 
-  // Avatar not available - User model doesn't have image field
-  const getChatAvatar = (): null => null;
+  const filtered = useMemo(() => {
+    if (!search.trim()) return chats;
+    const q = search.toLowerCase();
+    return chats.filter((c) => getName(c).toLowerCase().includes(q));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chats, search, user?.id]);
 
-  const getLastMessagePreview = (chat: Chat): string => {
-    const lastMessage = chat.messages?.[0];
-    if (!lastMessage) return "No messages yet";
-    
-    if (lastMessage.attachments && lastMessage.attachments.length > 0) {
-      const type = lastMessage.attachments[0].fileType;
-      if (type === "image") return "📷 Image";
-      if (type === "video") return "🎥 Video";
-      return `📎 ${lastMessage.attachments[0].fileName}`;
-    }
-    
-    return lastMessage.content || "";
-  };
-
-  const getUnreadCount = (chat: Chat, currentUserId?: string): number => {
-    // Simplified - in real implementation, track lastReadAt vs message createdAt
-    return 0;
-  };
-
-  const formatTime = (dateStr: string): string => {
-    const date = new Date(dateStr);
+  const formatTime = (iso: string): string => {
+    if (!iso) return "";
+    const d = new Date(iso);
     const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-    
-    if (days === 0) {
-      return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    } else if (days === 1) {
-      return "Yesterday";
-    } else if (days < 7) {
-      return date.toLocaleDateString([], { weekday: "short" });
-    } else {
-      return date.toLocaleDateString([], { month: "short", day: "numeric" });
+    const sameDay = d.toDateString() === now.toDateString();
+    if (sameDay) {
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     }
+    const diffDays = Math.floor((now.getTime() - d.getTime()) / 86400000);
+    if (diffDays === 1) return "Yesterday";
+    if (diffDays < 7) return d.toLocaleDateString([], { weekday: "short" });
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
   };
 
-  const renderChatItem = ({ item: chat }: { item: Chat }) => {
-    const chatName = getChatName(chat, user?.id);
-    const lastMessage = getLastMessagePreview(chat);
-    const time = formatTime(chat.lastMessageAt);
-    const unreadCount = getUnreadCount(chat, user?.id);
+  const previewOf = (chat: Chat): string => {
+    const m = chat.messages?.[0];
+    if (!m) return "No messages yet";
+    if (m.attachments && m.attachments.length) {
+      const a = m.attachments[0];
+      if (a.fileType.startsWith("image")) return "📷 Photo";
+      if (a.fileType.startsWith("audio")) return "🎤 Voice message";
+      if (a.fileType.startsWith("video")) return "🎥 Video";
+      return `📎 ${a.fileName}`;
+    }
+    const prefix =
+      chat.type !== "INDIVIDUAL" && m.sender?.id === user?.id ? "You: " : "";
+    return prefix + (m.content || "");
+  };
+
+  const initialsOf = (name: string) =>
+    name
+      .split(" ")
+      .map((p) => p[0])
+      .join("")
+      .toUpperCase()
+      .slice(0, 2);
+
+  const renderItem = ({ item }: { item: Chat }) => {
+    const name = getName(item);
+    const preview = previewOf(item);
+    const unread = item.unreadCount || 0;
+    const isGroup = item.type === "GROUP";
+    const isGlobal = item.type === "GLOBAL";
 
     return (
       <Pressable
-        onPress={() => router.push(`/chat/${chat.id}`)}
-        style={({ pressed }) => [styles.chatItem, pressed && styles.pressed]}
+        onPress={() => router.push(`/chat/${item.id}`)}
+        android_ripple={{ color: colors.muted }}
+        style={({ pressed }) => [
+          styles.row,
+          { backgroundColor: pressed ? colors.muted : "transparent" },
+        ]}
       >
-        <View style={styles.avatarContainer}>
+        <View style={styles.avatarWrap}>
           <View
             style={[
-              styles.avatarFallback,
-              { backgroundColor: colors.primary },
+              styles.avatar,
+              {
+                backgroundColor: isGlobal
+                  ? colors.gold
+                  : isGroup
+                    ? colors.info
+                    : colors.primary,
+              },
             ]}
           >
-            <Text style={styles.avatarText}>
-              {chat.type === "GLOBAL"
-                ? "🌍"
-                : chat.type === "GROUP"
-                ? "👥"
-                : chatName.charAt(0).toUpperCase()}
-            </Text>
+            {isGlobal ? (
+              <Feather name="globe" size={22} color="#fff" />
+            ) : isGroup ? (
+              <Feather name="users" size={20} color="#fff" />
+            ) : (
+              <Text style={styles.avatarText}>{initialsOf(name)}</Text>
+            )}
           </View>
-          {unreadCount > 0 && (
-            <View style={styles.unreadBadge}>
-              <Text style={styles.unreadText}>{unreadCount}</Text>
-            </View>
+          {unread > 0 && (
+            <View style={[styles.unreadDot, { borderColor: colors.background }]} />
           )}
         </View>
 
-        <View style={styles.chatInfo}>
-          <View style={styles.chatHeader}>
-            <Text style={[styles.chatName, { color: colors.text }]} numberOfLines={1}>
-              {chatName}
+        <View style={styles.body}>
+          <View style={styles.topRow}>
+            <Text
+              style={[styles.name, { color: colors.foreground }]}
+              numberOfLines={1}
+            >
+              {name}
             </Text>
-            <Text style={[styles.time, { color: colors.textSecondary }]}>
-              {time}
+            <Text style={[styles.time, { color: colors.mutedForeground }]}>
+              {formatTime(item.lastMessageAt)}
             </Text>
           </View>
-          <Text
-            style={[styles.lastMessage, { color: colors.textSecondary }]}
-            numberOfLines={1}
-          >
-            {lastMessage}
-          </Text>
+          <View style={styles.bottomRow}>
+            <Text
+              style={[
+                styles.preview,
+                {
+                  color: unread > 0 ? colors.foreground : colors.mutedForeground,
+                  fontWeight: unread > 0 ? "600" : "400",
+                },
+              ]}
+              numberOfLines={1}
+            >
+              {preview}
+            </Text>
+            {unread > 0 && (
+              <View
+                style={[styles.unreadBadge, { backgroundColor: colors.primary }]}
+              >
+                <Text style={styles.unreadBadgeText}>
+                  {unread > 99 ? "99+" : unread}
+                </Text>
+              </View>
+            )}
+          </View>
         </View>
       </Pressable>
     );
   };
 
-  const isTabLoading = activeTab === "GLOBAL" ? globalLoading : isLoading;
-
-  if (isTabLoading) {
-    return <LoadingSpinner />;
-  }
-
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {/* Header */}
-      <View
-        style={[
-          styles.header,
-          { paddingTop: insets.top + 10, backgroundColor: colors.background },
-        ]}
-      >
-        <Text style={[styles.title, { color: colors.text }]}>Messages</Text>
-        <Pressable
-          onPress={() => router.push("/chat/new")}
-          style={[styles.newButton, { backgroundColor: colors.primary }]}
+      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
+        <Text style={[styles.title, { color: colors.foreground }]}>Messages</Text>
+        <TouchableOpacity
+          onPress={() => router.push({ pathname: "/chat/new", params: { type: activeTab === "GLOBAL" ? "INDIVIDUAL" : activeTab } })}
+          style={[styles.newBtn, { backgroundColor: colors.primary }]}
+          activeOpacity={0.85}
         >
-          <Feather name="plus" size={20} color="#fff" />
-        </Pressable>
+          <Feather name="edit-3" size={18} color="#fff" />
+        </TouchableOpacity>
       </View>
 
-      {/* Search */}
-      <View style={[styles.searchContainer, { backgroundColor: colors.secondary, borderColor: colors.border }]}
+      <View
+        style={[
+          styles.searchWrap,
+          { backgroundColor: colors.secondary, borderColor: colors.border },
+        ]}
       >
-        <Feather
-          name="search"
-          size={18}
-          color={colors.textSecondary}
-          style={styles.searchIcon}
-        />
+        <Feather name="search" size={17} color={colors.mutedForeground} />
         <TextInput
-          style={[styles.searchInput, { color: colors.text }]}
-          placeholder="Search chats..."
-          placeholderTextColor={colors.textSecondary}
+          style={[styles.searchInput, { color: colors.foreground }]}
+          placeholder="Search messages…"
+          placeholderTextColor={colors.mutedForeground}
           value={search}
           onChangeText={setSearch}
+          returnKeyType="search"
         />
         {search.length > 0 && (
-          <Pressable onPress={() => setSearch("")} hitSlop={8}>
-            <Feather name="x" size={18} color={colors.textSecondary} />
+          <Pressable onPress={() => setSearch("")} hitSlop={10}>
+            <Feather name="x-circle" size={17} color={colors.mutedForeground} />
           </Pressable>
         )}
       </View>
 
-      {/* Segmented Tab Navigation */}
       <View style={[styles.segmentWrap, { backgroundColor: colors.secondary }]}>
-        {(["INDIVIDUAL", "GROUP", "GLOBAL"] as TabType[]).map((tab) => {
-          const active = activeTab === tab;
+        {TABS.map((t) => {
+          const active = activeTab === t.key;
           return (
             <TouchableOpacity
-              key={tab}
+              key={t.key}
               activeOpacity={0.85}
+              onPress={() => setActiveTab(t.key)}
               style={[
                 styles.segment,
                 active && {
                   backgroundColor: colors.background,
                   shadowColor: "#000",
-                  shadowOpacity: 0.08,
-                  shadowRadius: 4,
                   shadowOffset: { width: 0, height: 1 },
+                  shadowOpacity: 0.08,
+                  shadowRadius: 3,
                   elevation: 2,
                 },
               ]}
-              onPress={() => setActiveTab(tab)}
             >
               <Feather
-                name={
-                  tab === "INDIVIDUAL"
-                    ? "user"
-                    : tab === "GROUP"
-                    ? "users"
-                    : "globe"
-                }
+                name={t.icon}
                 size={14}
-                color={active ? colors.primary : colors.textSecondary}
-                style={{ marginRight: 6 }}
+                color={active ? colors.primary : colors.mutedForeground}
               />
               <Text
                 style={[
-                  styles.tabText,
-                  { color: active ? colors.primary : colors.textSecondary },
+                  styles.segmentText,
+                  { color: active ? colors.primary : colors.mutedForeground },
                 ]}
               >
-                {tab === "INDIVIDUAL" ? "Direct" : tab === "GROUP" ? "Group" : "Global"}
+                {t.label}
               </Text>
             </TouchableOpacity>
           );
         })}
       </View>
 
-      {/* Create Button - Only show for Individual & Group tabs */}
-      {activeTab !== "GLOBAL" && (
-        <TouchableOpacity
-          style={[styles.createButton, { backgroundColor: colors.primary }]}
-          onPress={() => router.push({ pathname: "/chat/new", params: { type: activeTab } })}
-        >
-          <Feather name="plus" size={18} color="#fff" />
-          <Text style={styles.createButtonText}>
-            {activeTab === "INDIVIDUAL" ? "New Individual Chat" : "New Group Chat"}
-          </Text>
-        </TouchableOpacity>
+      {isLoading ? (
+        <LoadingSpinner />
+      ) : (
+        <FlatList
+          data={filtered}
+          keyExtractor={(c) => c.id}
+          renderItem={renderItem}
+          contentContainerStyle={{
+            paddingBottom: insets.bottom + 24,
+            flexGrow: 1,
+          }}
+          refreshControl={
+            <RefreshControl
+              refreshing={isLoading}
+              onRefresh={refetch}
+              tintColor={colors.primary}
+            />
+          }
+          ItemSeparatorComponent={() => (
+            <View
+              style={{
+                height: 1,
+                marginLeft: 76,
+                backgroundColor: colors.border,
+                opacity: 0.5,
+              }}
+            />
+          )}
+          ListEmptyComponent={
+            <EmptyState
+              icon={activeTab === "GLOBAL" ? "globe" : "message-circle"}
+              title={
+                activeTab === "GLOBAL"
+                  ? "Global chat"
+                  : "No conversations yet"
+              }
+              subtitle={
+                activeTab === "GLOBAL"
+                  ? "Connect with everyone in the system."
+                  : activeTab === "INDIVIDUAL"
+                    ? "Tap the pencil to start a private conversation."
+                    : "Create a group to discuss together."
+              }
+            />
+          }
+        />
       )}
-
-      {/* Chat List */}
-      <FlatList
-        data={filteredChats}
-        keyExtractor={(item) => item.id}
-        renderItem={renderChatItem}
-        contentContainerStyle={styles.list}
-        refreshControl={
-          <RefreshControl
-            refreshing={isLoading}
-            onRefresh={refetch}
-            tintColor={colors.primary}
-          />
-        }
-        ListEmptyComponent={
-          <EmptyState
-            icon={activeTab === "GLOBAL" ? "globe" : "message-circle"}
-            title={activeTab === "GLOBAL" ? "Global Chat" : "No conversations"}
-            message={
-              activeTab === "GLOBAL"
-                ? "Connect with all system users here"
-                : activeTab === "INDIVIDUAL"
-                ? "Start a private conversation"
-                : "Join a group or committee chat"
-            }
-          />
-        }
-      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
   header: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingBottom: 10,
+    justifyContent: "space-between",
+    paddingHorizontal: 18,
+    paddingBottom: 8,
   },
-  title: {
-    fontSize: 28,
-    fontWeight: "700",
-  },
-  newButton: {
+  title: { fontSize: 28, fontFamily: "Inter_700Bold", fontWeight: "700" },
+  newBtn: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    justifyContent: "center",
     alignItems: "center",
+    justifyContent: "center",
   },
-  searchContainer: {
+  searchWrap: {
     flexDirection: "row",
     alignItems: "center",
     marginHorizontal: 16,
-    marginBottom: 12,
+    marginBottom: 10,
     paddingHorizontal: 12,
-    paddingVertical: Platform.OS === "ios" ? 10 : 8,
+    height: 42,
     borderRadius: 12,
     borderWidth: 1,
-  },
-  searchIcon: {
-    marginRight: 8,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 16,
-    paddingVertical: 0,
-  },
-  tabContainer: {
-    flexDirection: "row",
-    paddingHorizontal: 16,
-    paddingBottom: 10,
     gap: 8,
   },
-  tab: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-  },
+  searchInput: { flex: 1, fontSize: 15, fontFamily: "Inter_400Regular" },
   segmentWrap: {
     flexDirection: "row",
     marginHorizontal: 16,
-    marginBottom: 12,
+    marginBottom: 8,
     padding: 4,
     borderRadius: 12,
     gap: 4,
@@ -408,91 +388,68 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 8,
     paddingVertical: 9,
     borderRadius: 9,
+    gap: 6,
   },
-  tabText: {
-    fontSize: 13,
-    fontWeight: "500",
-  },
-  createButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    marginHorizontal: 16,
-    marginBottom: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-  },
-  createButtonText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  list: {
-    flexGrow: 1,
-    paddingHorizontal: 16,
-  },
-  chatItem: {
+  segmentText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  row: {
     flexDirection: "row",
     alignItems: "center",
     paddingVertical: 12,
+    paddingHorizontal: 16,
+    gap: 12,
   },
-  pressed: {
-    opacity: 0.7,
-  },
-  avatarContainer: {
-    position: "relative",
-  },
-  avatarFallback: {
+  avatarWrap: { position: "relative" },
+  avatar: {
     width: 52,
     height: 52,
     borderRadius: 26,
-    justifyContent: "center",
     alignItems: "center",
+    justifyContent: "center",
   },
   avatarText: {
-    fontSize: 24,
-  },
-  unreadBadge: {
-    position: "absolute",
-    bottom: 0,
-    right: 0,
-    backgroundColor: "#ef4444",
-    borderRadius: 10,
-    minWidth: 20,
-    height: 20,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  unreadText: {
     color: "#fff",
-    fontSize: 12,
-    fontWeight: "600",
-    paddingHorizontal: 4,
+    fontSize: 17,
+    fontFamily: "Inter_700Bold",
   },
-  chatInfo: {
-    flex: 1,
-    marginLeft: 12,
+  unreadDot: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: "#22c55e",
+    borderWidth: 2,
   },
-  chatHeader: {
+  body: { flex: 1, gap: 4 },
+  topRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 4,
+    justifyContent: "space-between",
+    gap: 8,
   },
-  chatName: {
-    fontSize: 16,
-    fontWeight: "600",
-    flex: 1,
+  name: { flex: 1, fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  time: { fontSize: 11, fontFamily: "Inter_400Regular" },
+  bottomRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
   },
-  time: {
-    fontSize: 12,
+  preview: { flex: 1, fontSize: 13.5, fontFamily: "Inter_400Regular" },
+  unreadBadge: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
   },
-  lastMessage: {
-    fontSize: 14,
+  unreadBadgeText: {
+    color: "#fff",
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
   },
 });

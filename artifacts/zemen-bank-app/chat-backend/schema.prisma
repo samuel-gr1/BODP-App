@@ -1,0 +1,99 @@
+// Add to your existing prisma/schema.prisma
+// =============================================
+
+enum ChatType {
+  INDIVIDUAL
+  GROUP
+  GLOBAL
+}
+
+enum ChatRole {
+  MEMBER
+  ADMIN
+}
+
+model Chat {
+  id             String       @id @default(cuid())
+  type           ChatType
+  name           String?
+  description    String?
+  lastMessageAt  DateTime     @default(now())
+  createdById    String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  members  ChatMember[]
+  messages ChatMessage[]
+  reads    ChatRead[]
+
+  @@index([type, lastMessageAt])
+}
+
+model ChatMember {
+  id        String   @id @default(cuid())
+  chatId    String
+  userId    String
+  role      ChatRole @default(MEMBER)
+  joinedAt  DateTime @default(now())
+
+  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId])
+  @@index([userId])
+}
+
+model ChatMessage {
+  id         String              @id @default(cuid())
+  chatId     String
+  senderId   String
+  content    String?
+  parentId   String?
+  isDeleted  Boolean             @default(false)
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  chat       Chat                @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender     User                @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  parent     ChatMessage?        @relation("ChatReplyTo", fields: [parentId], references: [id], onDelete: SetNull)
+  replies    ChatMessage[]       @relation("ChatReplyTo")
+  attachments ChatAttachment[]
+
+  @@index([chatId, createdAt])
+}
+
+model ChatAttachment {
+  id         String      @id @default(cuid())
+  messageId  String
+  url        String
+  fileType   String      // MIME type, e.g. "image/jpeg", "audio/m4a", "application/pdf"
+  fileName   String
+  fileSize   Int?
+  durationMs Int?        // for voice messages
+  createdAt  DateTime    @default(now())
+
+  message    ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+}
+
+model ChatRead {
+  id         String   @id @default(cuid())
+  chatId     String
+  userId     String
+  lastReadAt DateTime @default(now())
+
+  chat       Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId])
+  @@index([userId])
+}
+
+// =============================================
+// Relations to add to your existing User model:
+//
+//   chatMembers ChatMember[]
+//   chatMessages ChatMessage[]
+//   chatReads   ChatRead[]
+// =============================================

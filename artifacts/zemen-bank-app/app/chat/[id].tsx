@@ -1,43 +1,61 @@
 import { Feather } from "@expo/vector-icons";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Stack, useLocalSearchParams } from "expo-router";
-import React, { useState, useRef, useEffect, useMemo } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Audio } from "expo-av";
+import * as DocumentPicker from "expo-document-picker";
+import * as Haptics from "expo-haptics";
+import { Image } from "expo-image";
+import * as ImagePicker from "expo-image-picker";
+import { Stack, router, useLocalSearchParams } from "expo-router";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
   FlatList,
-  Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
+  TouchableOpacity,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useApi } from "@/hooks/useApi";
-import { useAuth } from "@/context/AuthContext";
-import { useColors } from "@/hooks/useColors";
+
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { useAuth } from "@/context/AuthContext";
+import { useApi } from "@/hooks/useApi";
+import { useColors } from "@/hooks/useColors";
+
+const API_BASE = process.env.EXPO_PUBLIC_API_URL;
+
+interface Attachment {
+  id: string;
+  url: string;
+  fileType: string;
+  fileName: string;
+  fileSize?: number;
+  durationMs?: number;
+}
 
 interface Message {
   id: string;
-  content: string;
+  content?: string;
   createdAt: string;
-  senderId: string;
-  senderName: string;
-  senderAvatar?: string;
-  attachments?: { url: string; type: string; name: string }[];
-  parentId?: string;
   isDeleted?: boolean;
+  parentId?: string;
+  parent?: { id: string; content?: string; sender: { name: string } };
+  sender: { id: string; name: string; email?: string };
+  attachments?: Attachment[];
 }
 
 interface ChatThread {
   id: string;
-  name: string;
-  type: "DIRECT" | "GROUP";
-  participants: { id: string; name: string; email: string }[];
-  meetingId?: string;
-  categoryId?: string;
+  name?: string;
+  type: "INDIVIDUAL" | "GROUP" | "GLOBAL";
+  members: { userId: string; user: { id: string; name: string; email: string } }[];
+  _count?: { members: number };
 }
 
 export default function ChatConversationScreen() {
@@ -45,331 +63,736 @@ export default function ChatConversationScreen() {
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { request } = useApi();
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const qc = useQueryClient();
-  const flatListRef = useRef<FlatList>(null);
 
-  const [message, setMessage] = useState("");
-  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
-  const [showAttachments, setShowAttachments] = useState(false);
+  const listRef = useRef<FlatList<Message>>(null);
+  const [text, setText] = useState("");
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [showAttach, setShowAttach] = useState(false);
+  const [previewImg, setPreviewImg] = useState<string | null>(null);
 
-  const { data: chatData, isLoading: chatLoading } = useQuery({
+  // Voice recording state
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [recordTimer, setRecordTimer] = useState(0);
+  const recordIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Voice playback state
+  const soundRef = useRef<Audio.Sound | null>(null);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+
+  const chatQuery = useQuery({
     queryKey: ["chat", id],
     queryFn: () => request<{ chat: ChatThread }>(`/chats/${id}`),
-    retry: 1,
   });
 
-  const { data: messagesData, isLoading: messagesLoading } = useQuery({
+  const messagesQuery = useQuery({
     queryKey: ["chat-messages", id],
-    queryFn: () => request<{ messages: Message[] }>(`/chats/${id}/messages`),
-    retry: 1,
-    refetchInterval: 3000,
+    queryFn: () =>
+      request<{ messages: Message[] }>(`/chats/${id}/messages?limit=100`),
+    refetchInterval: 4000,
   });
 
-  const sendMutation = useMutation({
-    mutationFn: () =>
+  const messages = messagesQuery.data?.messages ?? [];
+
+  const sendText = useMutation({
+    mutationFn: (payload: { content: string; replyToId?: string }) =>
       request(`/chats/${id}/messages`, {
         method: "POST",
-        body: JSON.stringify({
-          content: message,
-          replyToId: replyingTo?.id,
-        }),
+        body: JSON.stringify(payload),
       }),
     onSuccess: () => {
-      setMessage("");
-      setReplyingTo(null);
+      setText("");
+      setReplyTo(null);
       qc.invalidateQueries({ queryKey: ["chat-messages", id] });
       qc.invalidateQueries({ queryKey: ["chats"] });
+      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
     },
   });
 
-  const deleteMutation = useMutation({
-    mutationFn: (messageId: string) =>
-      request(`/chats/${id}/messages/${messageId}`, { method: "DELETE" }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["chat-messages", id] });
-    },
+  const deleteMsg = useMutation({
+    mutationFn: (msgId: string) =>
+      request(`/chats/${id}/messages/${msgId}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["chat-messages", id] }),
   });
 
-  const markAsReadMutation = useMutation({
+  const markRead = useMutation({
     mutationFn: () => request(`/chats/${id}/mark-read`, { method: "POST" }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["chats", "unread-count"] });
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["chats"] }),
   });
 
   useEffect(() => {
-    if (id) {
-      markAsReadMutation.mutate();
-    }
+    if (id) markRead.mutate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  const messages = messagesData?.messages ?? [];
-
   useEffect(() => {
     if (messages.length > 0) {
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 80);
+      setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 50);
     }
   }, [messages.length]);
 
-  const handleSend = () => {
-    if (message.trim()) {
-      sendMutation.mutate();
+  // Cleanup audio on unmount
+  useEffect(() => {
+    return () => {
+      if (recordIntervalRef.current) clearInterval(recordIntervalRef.current);
+      if (recordingRef.current) {
+        recordingRef.current.stopAndUnloadAsync().catch(() => {});
+      }
+      if (soundRef.current) {
+        soundRef.current.unloadAsync().catch(() => {});
+      }
+    };
+  }, []);
+
+  // ---- Send helpers ----
+  const handleSendText = () => {
+    const content = text.trim();
+    if (!content) return;
+    Haptics.selectionAsync();
+    sendText.mutate({ content, replyToId: replyTo?.id });
+  };
+
+  const uploadFile = async (file: {
+    uri: string;
+    name: string;
+    type: string;
+    durationMs?: number;
+  }) => {
+    if (!API_BASE || !token) {
+      Alert.alert("Not signed in", "Please log in again.");
+      return;
+    }
+    const form = new FormData();
+    // React Native FormData accepts {uri, name, type}
+    form.append("file", {
+      uri: file.uri,
+      name: file.name,
+      type: file.type,
+    } as unknown as Blob);
+    if (file.durationMs) form.append("durationMs", String(file.durationMs));
+    if (replyTo?.id) form.append("replyToId", replyTo.id);
+
+    try {
+      const res = await fetch(`${API_BASE}/chats/${id}/attachments`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Upload failed (${res.status})`);
+      }
+      setReplyTo(null);
+      qc.invalidateQueries({ queryKey: ["chat-messages", id] });
+      qc.invalidateQueries({ queryKey: ["chats"] });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Upload failed";
+      Alert.alert("Upload error", msg);
     }
   };
 
-  const isOwnMessage = (msg: Message) => msg.senderId === user?.id;
-
-  const formatTime = (dateString: string) =>
-    new Date(dateString).toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: "2-digit",
+  // ---- Attachments ----
+  const pickImage = async () => {
+    setShowAttach(false);
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert("Permission required", "Please allow photo access.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.8,
     });
+    if (result.canceled || !result.assets?.length) return;
+    const a = result.assets[0];
+    await uploadFile({
+      uri: a.uri,
+      name: a.fileName ?? `image-${Date.now()}.jpg`,
+      type: a.mimeType ?? "image/jpeg",
+    });
+  };
 
-  const getInitials = (name: string) =>
+  const takePhoto = async () => {
+    setShowAttach(false);
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert("Permission required", "Please allow camera access.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.8,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const a = result.assets[0];
+    await uploadFile({
+      uri: a.uri,
+      name: a.fileName ?? `photo-${Date.now()}.jpg`,
+      type: a.mimeType ?? "image/jpeg",
+    });
+  };
+
+  const pickDocument = async () => {
+    setShowAttach(false);
+    const result = await DocumentPicker.getDocumentAsync({
+      type: "*/*",
+      copyToCacheDirectory: true,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const a = result.assets[0];
+    await uploadFile({
+      uri: a.uri,
+      name: a.name,
+      type: a.mimeType ?? "application/octet-stream",
+    });
+  };
+
+  // ---- Voice ----
+  const startRecording = async () => {
+    try {
+      const perm = await Audio.requestPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert("Microphone permission", "Please allow microphone access.");
+        return;
+      }
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+      const rec = new Audio.Recording();
+      await rec.prepareToRecordAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY,
+      );
+      await rec.startAsync();
+      recordingRef.current = rec;
+      setRecording(true);
+      setRecordTimer(0);
+      recordIntervalRef.current = setInterval(
+        () => setRecordTimer((t) => t + 1),
+        1000,
+      );
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    } catch (e) {
+      console.log("recording error", e);
+      Alert.alert("Recording failed", "Could not start recording.");
+    }
+  };
+
+  const stopRecording = async (cancel = false) => {
+    if (recordIntervalRef.current) {
+      clearInterval(recordIntervalRef.current);
+      recordIntervalRef.current = null;
+    }
+    setRecording(false);
+    const rec = recordingRef.current;
+    recordingRef.current = null;
+    if (!rec) return;
+    try {
+      await rec.stopAndUnloadAsync();
+    } catch {}
+    const uri = rec.getURI();
+    const duration = recordTimer * 1000;
+    setRecordTimer(0);
+    if (cancel || !uri || duration < 500) return;
+    await uploadFile({
+      uri,
+      name: `voice-${Date.now()}.m4a`,
+      type: "audio/m4a",
+      durationMs: duration,
+    });
+  };
+
+  const playVoice = async (att: Attachment) => {
+    try {
+      if (soundRef.current) {
+        await soundRef.current.unloadAsync();
+        soundRef.current = null;
+      }
+      if (playingId === att.id) {
+        setPlayingId(null);
+        return;
+      }
+      const { sound } = await Audio.Sound.createAsync({ uri: att.url });
+      soundRef.current = sound;
+      setPlayingId(att.id);
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.isLoaded && status.didJustFinish) {
+          setPlayingId(null);
+          sound.unloadAsync().catch(() => {});
+          if (soundRef.current === sound) soundRef.current = null;
+        }
+      });
+      await sound.playAsync();
+    } catch (e) {
+      console.log("play error", e);
+    }
+  };
+
+  // ---- Header info ----
+  const chat = chatQuery.data?.chat;
+  const headerName = useMemo(() => {
+    if (!chat) return "Chat";
+    if (chat.name) return chat.name;
+    if (chat.type === "GLOBAL") return "Global Chat";
+    if (chat.type === "INDIVIDUAL") {
+      const other = chat.members.find((m) => m.userId !== user?.id);
+      return other?.user?.name ?? "Direct Message";
+    }
+    return `Group · ${chat._count?.members ?? chat.members.length} members`;
+  }, [chat, user?.id]);
+
+  const subtitle = useMemo(() => {
+    if (!chat) return "";
+    if (chat.type === "GROUP") return `${chat._count?.members ?? chat.members.length} members`;
+    if (chat.type === "GLOBAL") return "Everyone in the workspace";
+    return "Direct message";
+  }, [chat]);
+
+  const initialsOf = (name: string) =>
     name
       .split(" ")
-      .map((n) => n[0])
+      .map((p) => p[0])
       .join("")
       .toUpperCase()
       .slice(0, 2);
 
+  const formatTime = (iso: string) =>
+    new Date(iso).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+
+  const formatRecord = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const dayLabel = (iso: string): string => {
+    const d = new Date(iso);
+    const now = new Date();
+    const diff = Math.floor(
+      (now.setHours(0, 0, 0, 0) - new Date(d).setHours(0, 0, 0, 0)) / 86400000,
+    );
+    if (diff === 0) return "Today";
+    if (diff === 1) return "Yesterday";
+    if (diff < 7) return d.toLocaleDateString([], { weekday: "long" });
+    return d.toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+      year: d.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined,
+    });
+  };
+
+  // ---- Render ----
   const renderMessage = ({ item, index }: { item: Message; index: number }) => {
-    const own = isOwnMessage(item);
+    const own = item.sender.id === user?.id;
     const prev = messages[index - 1];
-    const showAvatar = !own && (!prev || prev.senderId !== item.senderId);
-    const groupedTop = prev && prev.senderId === item.senderId;
-    const parentMsg = item.parentId
-      ? messages.find((m) => m.id === item.parentId)
-      : null;
+    const grouped = prev && prev.sender.id === item.sender.id &&
+      new Date(item.createdAt).getTime() - new Date(prev.createdAt).getTime() < 5 * 60 * 1000;
+    const showAvatar = !own && (!prev || prev.sender.id !== item.sender.id);
+    const showSenderName =
+      chat?.type !== "INDIVIDUAL" && !own && showAvatar;
+
+    const showDateSep =
+      !prev ||
+      new Date(item.createdAt).toDateString() !==
+        new Date(prev.createdAt).toDateString();
+
+    const onLongPress = () => {
+      if (item.isDeleted) return;
+      const opts: { text: string; onPress?: () => void; style?: "destructive" | "cancel" }[] = [
+        { text: "Reply", onPress: () => setReplyTo(item) },
+      ];
+      if (own) {
+        opts.push({
+          text: "Delete",
+          style: "destructive",
+          onPress: () => deleteMsg.mutate(item.id),
+        });
+      }
+      opts.push({ text: "Cancel", style: "cancel" });
+      Haptics.selectionAsync();
+      Alert.alert("Message", undefined, opts);
+    };
 
     return (
-      <View
-        style={[
-          styles.messageRow,
-          {
-            justifyContent: own ? "flex-end" : "flex-start",
-            marginTop: groupedTop ? 2 : 10,
-          },
-        ]}
-      >
-        {!own && (
-          <View style={styles.avatarSlot}>
-            {showAvatar ? (
-              <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
-                <Text style={styles.avatarText}>{getInitials(item.senderName)}</Text>
-              </View>
-            ) : null}
+      <View>
+        {showDateSep && (
+          <View style={styles.dayWrap}>
+            <View
+              style={[styles.dayPill, { backgroundColor: colors.secondary }]}
+            >
+              <Text style={[styles.dayText, { color: colors.mutedForeground }]}>
+                {dayLabel(item.createdAt)}
+              </Text>
+            </View>
           </View>
         )}
 
-        <View style={[styles.messageContainer, { alignItems: own ? "flex-end" : "flex-start" }]}>
-          {!own && showAvatar && (
-            <Text style={[styles.senderName, { color: colors.mutedForeground }]}>
-              {item.senderName}
-            </Text>
-          )}
-
-          {parentMsg && (
-            <View
-              style={[
-                styles.replyPreview,
-                {
-                  backgroundColor: own ? "rgba(255,255,255,0.15)" : colors.muted,
-                  borderLeftColor: own ? "#fff" : colors.primary,
-                },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.replyAuthor,
-                  { color: own ? "rgba(255,255,255,0.9)" : colors.primary },
-                ]}
-                numberOfLines={1}
-              >
-                {parentMsg.senderName}
-              </Text>
-              <Text
-                style={[
-                  styles.replyText,
-                  { color: own ? "rgba(255,255,255,0.8)" : colors.mutedForeground },
-                ]}
-                numberOfLines={1}
-              >
-                {parentMsg.content}
-              </Text>
+        <View
+          style={[
+            styles.row,
+            {
+              justifyContent: own ? "flex-end" : "flex-start",
+              marginTop: grouped ? 2 : 8,
+            },
+          ]}
+        >
+          {!own && (
+            <View style={styles.avatarSlot}>
+              {showAvatar && (
+                <View
+                  style={[styles.avatar, { backgroundColor: colors.primary }]}
+                >
+                  <Text style={styles.avatarText}>
+                    {initialsOf(item.sender.name)}
+                  </Text>
+                </View>
+              )}
             </View>
           )}
 
-          <View
-            style={[
-              styles.messageBubble,
-              {
-                backgroundColor: own ? colors.primary : colors.card,
-                borderTopRightRadius: own && groupedTop ? 6 : 18,
-                borderTopLeftRadius: !own && groupedTop ? 6 : 18,
-                borderBottomRightRadius: own ? 6 : 18,
-                borderBottomLeftRadius: own ? 18 : 6,
-                shadowColor: own ? colors.primary : "#000",
-              },
+          <Pressable
+            onLongPress={onLongPress}
+            delayLongPress={250}
+            style={({ pressed }) => [
+              styles.bubbleWrap,
+              { opacity: pressed ? 0.85 : 1 },
             ]}
           >
-            {item.isDeleted ? (
+            {showSenderName && (
               <Text
-                style={[
-                  styles.deletedText,
-                  { color: own ? "rgba(255,255,255,0.7)" : colors.mutedForeground },
-                ]}
+                style={[styles.senderName, { color: colors.mutedForeground }]}
               >
-                This message was deleted
-              </Text>
-            ) : (
-              <Text
-                style={[
-                  styles.messageText,
-                  { color: own ? "#fff" : colors.foreground },
-                ]}
-              >
-                {item.content}
+                {item.sender.name}
               </Text>
             )}
 
-            {item.attachments && item.attachments.length > 0 && (
-              <View style={styles.attachmentsContainer}>
-                {item.attachments.map((att, idx) => (
-                  <Pressable
-                    key={idx}
+            {item.parent && (
+              <View
+                style={[
+                  styles.replyChip,
+                  {
+                    backgroundColor: own
+                      ? "rgba(255,255,255,0.2)"
+                      : colors.muted,
+                    borderLeftColor: own ? "#fff" : colors.primary,
+                    alignSelf: own ? "flex-end" : "flex-start",
+                  },
+                ]}
+              >
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.replyAuthor,
+                    { color: own ? "#fff" : colors.primary },
+                  ]}
+                >
+                  {item.parent.sender.name}
+                </Text>
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.replyText,
+                    {
+                      color: own
+                        ? "rgba(255,255,255,0.85)"
+                        : colors.mutedForeground,
+                    },
+                  ]}
+                >
+                  {item.parent.content || "Attachment"}
+                </Text>
+              </View>
+            )}
+
+            {item.attachments?.map((att) =>
+              renderAttachment(att, own),
+            )}
+
+            {item.content ? (
+              <View
+                style={[
+                  styles.bubble,
+                  {
+                    backgroundColor: own ? colors.primary : colors.card,
+                    borderColor: own ? "transparent" : colors.border,
+                    borderTopRightRadius: own && grouped ? 6 : 16,
+                    borderTopLeftRadius: !own && grouped ? 6 : 16,
+                    borderBottomRightRadius: own ? 4 : 16,
+                    borderBottomLeftRadius: !own ? 4 : 16,
+                    alignSelf: own ? "flex-end" : "flex-start",
+                  },
+                ]}
+              >
+                {item.isDeleted ? (
+                  <Text
                     style={[
-                      styles.attachment,
+                      styles.bubbleText,
                       {
-                        backgroundColor: own
-                          ? "rgba(255,255,255,0.18)"
-                          : colors.secondary,
+                        color: own
+                          ? "rgba(255,255,255,0.7)"
+                          : colors.mutedForeground,
+                        fontStyle: "italic",
                       },
                     ]}
                   >
-                    <Feather
-                      name={att.type.startsWith("image") ? "image" : "file-text"}
-                      size={16}
-                      color={own ? "#fff" : colors.primary}
-                    />
-                    <Text
-                      style={[
-                        styles.attachmentText,
-                        { color: own ? "#fff" : colors.foreground },
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {att.name}
-                    </Text>
-                  </Pressable>
-                ))}
+                    Message deleted
+                  </Text>
+                ) : (
+                  <Text
+                    style={[
+                      styles.bubbleText,
+                      { color: own ? "#fff" : colors.foreground },
+                    ]}
+                  >
+                    {item.content}
+                  </Text>
+                )}
               </View>
-            )}
-          </View>
+            ) : null}
 
-          <View style={styles.messageMeta}>
-            <Text style={[styles.timeText, { color: colors.mutedForeground }]}>
+            <Text
+              style={[
+                styles.metaTime,
+                {
+                  color: colors.mutedForeground,
+                  textAlign: own ? "right" : "left",
+                },
+              ]}
+            >
               {formatTime(item.createdAt)}
             </Text>
-            {!item.isDeleted && (
-              <>
-                <Pressable
-                  onPress={() => setReplyingTo(item)}
-                  style={styles.actionBtn}
-                  hitSlop={8}
-                >
-                  <Feather
-                    name="corner-up-left"
-                    size={12}
-                    color={colors.mutedForeground}
-                  />
-                </Pressable>
-                {own && (
-                  <Pressable
-                    onPress={() => deleteMutation.mutate(item.id)}
-                    style={styles.actionBtn}
-                    hitSlop={8}
-                  >
-                    <Feather name="trash-2" size={12} color={colors.destructive} />
-                  </Pressable>
-                )}
-              </>
-            )}
-          </View>
+          </Pressable>
         </View>
       </View>
     );
   };
 
-  const headerName = chatData?.chat?.name || "Chat";
-  const otherInitials = useMemo(() => getInitials(headerName), [headerName]);
+  const renderAttachment = (att: Attachment, own: boolean) => {
+    const isImage = att.fileType.startsWith("image");
+    const isAudio = att.fileType.startsWith("audio");
 
-  if (chatLoading) return <LoadingSpinner />;
+    if (isImage) {
+      return (
+        <Pressable
+          key={att.id}
+          onPress={() => setPreviewImg(att.url)}
+          style={[
+            styles.imageWrap,
+            { alignSelf: own ? "flex-end" : "flex-start" },
+          ]}
+        >
+          <Image
+            source={{ uri: att.url }}
+            style={styles.image}
+            contentFit="cover"
+            transition={150}
+          />
+        </Pressable>
+      );
+    }
+
+    if (isAudio) {
+      const isPlaying = playingId === att.id;
+      const seconds = att.durationMs ? Math.round(att.durationMs / 1000) : 0;
+      return (
+        <View
+          key={att.id}
+          style={[
+            styles.voiceWrap,
+            {
+              backgroundColor: own ? colors.primary : colors.card,
+              borderColor: own ? "transparent" : colors.border,
+              alignSelf: own ? "flex-end" : "flex-start",
+            },
+          ]}
+        >
+          <TouchableOpacity
+            onPress={() => playVoice(att)}
+            activeOpacity={0.85}
+            style={[
+              styles.voiceBtn,
+              {
+                backgroundColor: own
+                  ? "rgba(255,255,255,0.25)"
+                  : colors.primary,
+              },
+            ]}
+          >
+            <Feather
+              name={isPlaying ? "pause" : "play"}
+              size={16}
+              color="#fff"
+            />
+          </TouchableOpacity>
+          <View style={styles.voiceBars}>
+            {Array.from({ length: 18 }).map((_, i) => (
+              <View
+                key={i}
+                style={{
+                  width: 2,
+                  height: 6 + ((i * 7) % 14),
+                  borderRadius: 1,
+                  marginHorizontal: 1,
+                  backgroundColor: own
+                    ? "rgba(255,255,255,0.85)"
+                    : colors.primary,
+                  opacity: isPlaying ? 1 : 0.6,
+                }}
+              />
+            ))}
+          </View>
+          <Text
+            style={[
+              styles.voiceTime,
+              { color: own ? "rgba(255,255,255,0.9)" : colors.mutedForeground },
+            ]}
+          >
+            {formatRecord(seconds)}
+          </Text>
+        </View>
+      );
+    }
+
+    return (
+      <Pressable
+        key={att.id}
+        onPress={() => {
+          /* no-op for now; could open in browser */
+        }}
+        style={[
+          styles.fileWrap,
+          {
+            backgroundColor: own ? colors.primary : colors.card,
+            borderColor: own ? "transparent" : colors.border,
+            alignSelf: own ? "flex-end" : "flex-start",
+          },
+        ]}
+      >
+        <View
+          style={[
+            styles.fileIcon,
+            {
+              backgroundColor: own
+                ? "rgba(255,255,255,0.25)"
+                : colors.accent,
+            },
+          ]}
+        >
+          <Feather
+            name="file"
+            size={18}
+            color={own ? "#fff" : colors.primary}
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text
+            numberOfLines={1}
+            style={[
+              styles.fileName,
+              { color: own ? "#fff" : colors.foreground },
+            ]}
+          >
+            {att.fileName}
+          </Text>
+          {att.fileSize ? (
+            <Text
+              style={[
+                styles.fileMeta,
+                {
+                  color: own
+                    ? "rgba(255,255,255,0.85)"
+                    : colors.mutedForeground,
+                },
+              ]}
+            >
+              {(att.fileSize / 1024).toFixed(0)} KB
+            </Text>
+          ) : null}
+        </View>
+        <Feather
+          name="download"
+          size={16}
+          color={own ? "#fff" : colors.mutedForeground}
+        />
+      </Pressable>
+    );
+  };
+
+  if (chatQuery.isLoading) return <LoadingSpinner />;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <Stack.Screen
         options={{
+          headerShown: true,
           headerStyle: { backgroundColor: colors.primary },
           headerTintColor: "#fff",
+          headerBackTitle: "Back",
           headerTitle: () => (
-            <View style={styles.headerTitleRow}>
-              <View style={[styles.headerAvatar, { backgroundColor: "rgba(255,255,255,0.18)" }]}>
-                <Text style={styles.headerAvatarText}>{otherInitials}</Text>
+            <Pressable
+              onPress={() => router.push(`/chat/${id}/info` as never)}
+              style={styles.headerTitleRow}
+            >
+              <View
+                style={[
+                  styles.headerAvatar,
+                  { backgroundColor: "rgba(255,255,255,0.18)" },
+                ]}
+              >
+                <Text style={styles.headerAvatarText}>
+                  {initialsOf(headerName)}
+                </Text>
               </View>
-              <View style={{ flex: 1 }}>
+              <View style={{ maxWidth: 220 }}>
                 <Text style={styles.headerTitle} numberOfLines={1}>
                   {headerName}
                 </Text>
-                <Text style={styles.headerSubtitle} numberOfLines={1}>
-                  {chatData?.chat?.type === "GROUP"
-                    ? `${chatData?.chat?.participants?.length ?? 0} members`
-                    : "Online"}
+                <Text style={styles.headerSub} numberOfLines={1}>
+                  {subtitle}
                 </Text>
               </View>
-            </View>
-          ),
-          headerRight: () => (
-            <Pressable style={styles.headerBtn} hitSlop={10}>
-              <Feather
-                name={chatData?.chat?.type === "GROUP" ? "users" : "phone"}
-                size={20}
-                color="#fff"
-              />
             </Pressable>
           ),
         }}
       />
 
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={styles.flex}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={Platform.OS === "ios" ? insets.top + 44 : 0}
       >
         <View style={styles.flex}>
-          {messagesLoading ? (
+          {messagesQuery.isLoading ? (
             <LoadingSpinner />
           ) : (
             <FlatList
-              ref={flatListRef}
+              ref={listRef}
               data={messages}
-              keyExtractor={(item) => item.id}
+              keyExtractor={(m) => m.id}
               renderItem={renderMessage}
               contentContainerStyle={{
                 paddingHorizontal: 12,
-                paddingTop: 12,
-                paddingBottom: 16,
+                paddingTop: 8,
+                paddingBottom: 12,
+                flexGrow: 1,
+                justifyContent: messages.length ? "flex-end" : "center",
               }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={
+                Platform.OS === "ios" ? "interactive" : "on-drag"
+              }
               showsVerticalScrollIndicator={false}
               onContentSizeChange={() =>
-                flatListRef.current?.scrollToEnd({ animated: true })
+                listRef.current?.scrollToEnd({ animated: true })
               }
-              keyboardShouldPersistTaps="handled"
-              keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
               ListEmptyComponent={
-                <View style={styles.emptyState}>
+                <View style={styles.empty}>
                   <View
                     style={[
                       styles.emptyIcon,
@@ -378,198 +801,261 @@ export default function ChatConversationScreen() {
                   >
                     <Feather
                       name="message-circle"
-                      size={36}
+                      size={32}
                       color={colors.primary}
                     />
                   </View>
-                  <Text style={[styles.emptyTitle, { color: colors.foreground }]}>
-                    Start the conversation
+                  <Text
+                    style={[styles.emptyTitle, { color: colors.foreground }]}
+                  >
+                    Say hello
                   </Text>
                   <Text
-                    style={[styles.emptyText, { color: colors.mutedForeground }]}
+                    style={[
+                      styles.emptySub,
+                      { color: colors.mutedForeground },
+                    ]}
                   >
-                    Say hello and break the ice!
+                    No messages yet — be the first to send one.
                   </Text>
                 </View>
               }
-              style={styles.flex}
             />
           )}
         </View>
 
-        {/* Reply Preview */}
-        {replyingTo && (
+        {replyTo && (
           <View
             style={[
               styles.replyBar,
-              { backgroundColor: colors.accent, borderTopColor: colors.border },
+              {
+                backgroundColor: colors.accent,
+                borderTopColor: colors.border,
+              },
             ]}
           >
-            <View style={[styles.replyBarLine, { backgroundColor: colors.primary }]} />
-            <View style={styles.replyBarContent}>
-              <Text style={[styles.replyBarAuthor, { color: colors.primary }]}>
-                Replying to {replyingTo.senderName}
+            <View
+              style={[styles.replyBarLine, { backgroundColor: colors.primary }]}
+            />
+            <View style={styles.flex}>
+              <Text style={[styles.replyBarTitle, { color: colors.primary }]}>
+                Replying to {replyTo.sender.name}
               </Text>
               <Text
-                style={[styles.replyBarText, { color: colors.foreground }]}
                 numberOfLines={1}
+                style={[styles.replyBarText, { color: colors.foreground }]}
               >
-                {replyingTo.content}
+                {replyTo.content || "Attachment"}
               </Text>
             </View>
-            <Pressable onPress={() => setReplyingTo(null)} hitSlop={10}>
+            <Pressable onPress={() => setReplyTo(null)} hitSlop={10}>
               <Feather name="x" size={18} color={colors.mutedForeground} />
             </Pressable>
           </View>
         )}
 
-        {/* Attachment Options */}
-        {showAttachments && (
+        {showAttach && (
           <View
             style={[
-              styles.attachmentOptions,
-              { backgroundColor: colors.card, borderTopColor: colors.border },
-            ]}
-          >
-            <Pressable style={styles.attachmentOption}>
-              <View
-                style={[
-                  styles.attachmentIcon,
-                  { backgroundColor: colors.successLight },
-                ]}
-              >
-                <Feather name="image" size={20} color={colors.success} />
-              </View>
-              <Text
-                style={[styles.attachmentLabel, { color: colors.foreground }]}
-              >
-                Photo
-              </Text>
-            </Pressable>
-            <Pressable style={styles.attachmentOption}>
-              <View
-                style={[
-                  styles.attachmentIcon,
-                  { backgroundColor: colors.infoLight },
-                ]}
-              >
-                <Feather name="file-text" size={20} color={colors.info} />
-              </View>
-              <Text
-                style={[styles.attachmentLabel, { color: colors.foreground }]}
-              >
-                Document
-              </Text>
-            </Pressable>
-            <Pressable style={styles.attachmentOption}>
-              <View
-                style={[
-                  styles.attachmentIcon,
-                  { backgroundColor: colors.warningLight },
-                ]}
-              >
-                <Feather name="mic" size={20} color={colors.warning} />
-              </View>
-              <Text
-                style={[styles.attachmentLabel, { color: colors.foreground }]}
-              >
-                Voice
-              </Text>
-            </Pressable>
-          </View>
-        )}
-
-        {/* Input Area - sits flush above keyboard, above safe-area when no keyboard */}
-        <View
-          style={[
-            styles.inputContainer,
-            {
-              backgroundColor: colors.card,
-              borderTopColor: colors.border,
-              paddingBottom: Math.max(insets.bottom, 8),
-            },
-          ]}
-        >
-          <Pressable
-            onPress={() => setShowAttachments((s) => !s)}
-            style={[
-              styles.iconBtn,
-              showAttachments && { backgroundColor: colors.accent },
-            ]}
-            hitSlop={6}
-          >
-            <Feather
-              name={showAttachments ? "x" : "plus"}
-              size={22}
-              color={showAttachments ? colors.primary : colors.mutedForeground}
-            />
-          </Pressable>
-
-          <View
-            style={[
-              styles.inputWrap,
-              { backgroundColor: colors.secondary, borderColor: colors.border },
-            ]}
-          >
-            <TextInput
-              style={[styles.input, { color: colors.foreground }]}
-              placeholder="Type a message..."
-              placeholderTextColor={colors.mutedForeground}
-              value={message}
-              onChangeText={setMessage}
-              multiline
-              maxLength={1000}
-            />
-            <Pressable
-              style={styles.emojiBtn}
-              hitSlop={6}
-              onPress={() => {}}
-            >
-              <Feather
-                name="smile"
-                size={20}
-                color={colors.mutedForeground}
-              />
-            </Pressable>
-          </View>
-
-          <Pressable
-            onPress={handleSend}
-            disabled={!message.trim() || sendMutation.isPending}
-            style={[
-              styles.sendBtn,
+              styles.attachPanel,
               {
-                backgroundColor: message.trim() ? colors.primary : colors.muted,
-                transform: [{ scale: message.trim() ? 1 : 0.95 }],
+                backgroundColor: colors.card,
+                borderTopColor: colors.border,
               },
             ]}
           >
-            {sendMutation.isPending ? (
-              <LoadingSpinner size="small" />
-            ) : (
-              <Feather
-                name={message.trim() ? "send" : "mic"}
-                size={20}
-                color="#fff"
+            <AttachItem
+              icon="image"
+              label="Photo"
+              bg={colors.successLight}
+              fg={colors.success}
+              onPress={pickImage}
+            />
+            <AttachItem
+              icon="camera"
+              label="Camera"
+              bg={colors.infoLight}
+              fg={colors.primary}
+              onPress={takePhoto}
+            />
+            <AttachItem
+              icon="file-text"
+              label="Document"
+              bg={colors.warningLight}
+              fg={colors.warning}
+              onPress={pickDocument}
+            />
+          </View>
+        )}
+
+        {recording ? (
+          <View
+            style={[
+              styles.recordBar,
+              {
+                backgroundColor: colors.card,
+                borderTopColor: colors.border,
+                paddingBottom: Math.max(insets.bottom, 8),
+              },
+            ]}
+          >
+            <Pressable
+              onPress={() => stopRecording(true)}
+              style={[styles.recordBtn, { backgroundColor: colors.muted }]}
+            >
+              <Feather name="trash-2" size={20} color={colors.destructive} />
+            </Pressable>
+            <View style={styles.recordCenter}>
+              <View
+                style={[styles.recordDot, { backgroundColor: colors.destructive }]}
               />
+              <Text style={[styles.recordTime, { color: colors.foreground }]}>
+                Recording  {formatRecord(recordTimer)}
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => stopRecording(false)}
+              style={[styles.recordBtn, { backgroundColor: colors.primary }]}
+            >
+              <Feather name="send" size={18} color="#fff" />
+            </Pressable>
+          </View>
+        ) : (
+          <View
+            style={[
+              styles.inputBar,
+              {
+                backgroundColor: colors.card,
+                borderTopColor: colors.border,
+                paddingBottom: Math.max(insets.bottom, 8),
+              },
+            ]}
+          >
+            <Pressable
+              onPress={() => setShowAttach((s) => !s)}
+              style={[
+                styles.iconBtn,
+                showAttach && { backgroundColor: colors.accent },
+              ]}
+              hitSlop={6}
+            >
+              <Feather
+                name={showAttach ? "x" : "paperclip"}
+                size={20}
+                color={showAttach ? colors.primary : colors.mutedForeground}
+              />
+            </Pressable>
+
+            <View
+              style={[
+                styles.inputWrap,
+                {
+                  backgroundColor: colors.secondary,
+                  borderColor: colors.border,
+                },
+              ]}
+            >
+              <TextInput
+                style={[styles.input, { color: colors.foreground }]}
+                placeholder="Message"
+                placeholderTextColor={colors.mutedForeground}
+                value={text}
+                onChangeText={setText}
+                multiline
+                maxLength={2000}
+              />
+            </View>
+
+            {text.trim().length > 0 ? (
+              <Pressable
+                onPress={handleSendText}
+                disabled={sendText.isPending}
+                style={[styles.sendBtn, { backgroundColor: colors.primary }]}
+              >
+                {sendText.isPending ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Feather name="send" size={18} color="#fff" />
+                )}
+              </Pressable>
+            ) : (
+              <Pressable
+                onLongPress={startRecording}
+                onPressOut={() => {
+                  if (recording) stopRecording(false);
+                }}
+                delayLongPress={200}
+                style={[styles.sendBtn, { backgroundColor: colors.primary }]}
+              >
+                <Feather name="mic" size={20} color="#fff" />
+              </Pressable>
             )}
-          </Pressable>
-        </View>
+          </View>
+        )}
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={!!previewImg}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewImg(null)}
+      >
+        <View style={styles.previewBackdrop}>
+          <Pressable
+            style={styles.previewClose}
+            onPress={() => setPreviewImg(null)}
+            hitSlop={12}
+          >
+            <Feather name="x" size={24} color="#fff" />
+          </Pressable>
+          {previewImg && (
+            <Image
+              source={{ uri: previewImg }}
+              style={styles.previewImage}
+              contentFit="contain"
+            />
+          )}
+        </View>
+      </Modal>
     </View>
+  );
+}
+
+function AttachItem({
+  icon,
+  label,
+  bg,
+  fg,
+  onPress,
+}: {
+  icon: keyof typeof Feather.glyphMap;
+  label: string;
+  bg: string;
+  fg: string;
+  onPress: () => void;
+}) {
+  const colors = useColors();
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.85}
+      style={styles.attachItem}
+    >
+      <View style={[styles.attachIcon, { backgroundColor: bg }]}>
+        <Feather name={icon} size={22} color={fg} />
+      </View>
+      <Text style={[styles.attachLabel, { color: colors.foreground }]}>
+        {label}
+      </Text>
+    </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
   flex: { flex: 1 },
-  headerBtn: { padding: 8, marginRight: 4 },
-  headerTitleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    maxWidth: 240,
-  },
+
+  headerTitleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   headerAvatar: {
     width: 34,
     height: 34,
@@ -580,20 +1066,25 @@ const styles = StyleSheet.create({
   headerAvatarText: {
     color: "#fff",
     fontSize: 13,
-    fontFamily: "Inter_600SemiBold",
+    fontFamily: "Inter_700Bold",
   },
-  headerTitle: {
-    color: "#fff",
-    fontSize: 16,
-    fontFamily: "Inter_600SemiBold",
-  },
-  headerSubtitle: {
-    color: "rgba(255,255,255,0.75)",
+  headerTitle: { color: "#fff", fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  headerSub: {
+    color: "rgba(255,255,255,0.8)",
     fontSize: 11,
     fontFamily: "Inter_400Regular",
   },
-  messageRow: { flexDirection: "row", alignItems: "flex-end" },
-  avatarSlot: { width: 36, marginRight: 6 },
+
+  dayWrap: { alignItems: "center", marginVertical: 12 },
+  dayPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  dayText: { fontSize: 11, fontFamily: "Inter_500Medium" },
+
+  row: { flexDirection: "row", alignItems: "flex-end", gap: 6 },
+  avatarSlot: { width: 32 },
   avatar: {
     width: 32,
     height: 32,
@@ -602,99 +1093,147 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   avatarText: { color: "#fff", fontSize: 12, fontFamily: "Inter_600SemiBold" },
-  messageContainer: { maxWidth: "78%" },
+  bubbleWrap: { maxWidth: "78%" },
   senderName: {
     fontSize: 11,
     fontFamily: "Inter_500Medium",
-    marginBottom: 3,
+    marginBottom: 4,
     marginLeft: 4,
   },
-  replyPreview: {
+  bubble: {
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  bubbleText: {
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: "Inter_400Regular",
+  },
+  metaTime: {
+    fontSize: 10,
+    marginTop: 3,
+    marginHorizontal: 4,
+    fontFamily: "Inter_400Regular",
+  },
+
+  replyChip: {
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 10,
     borderLeftWidth: 3,
     marginBottom: 4,
-    minWidth: 120,
+    minWidth: 140,
     maxWidth: "100%",
   },
-  replyAuthor: {
-    fontSize: 11,
-    fontFamily: "Inter_600SemiBold",
-    marginBottom: 1,
+  replyAuthor: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  replyText: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 1 },
+
+  imageWrap: {
+    borderRadius: 14,
+    overflow: "hidden",
+    marginBottom: 4,
   },
-  replyText: { fontSize: 12, fontFamily: "Inter_400Regular" },
-  messageBubble: {
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 18,
-    elevation: 1,
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 3,
+  image: {
+    width: 220,
+    height: 220,
+    borderRadius: 14,
   },
-  messageText: { fontSize: 15, fontFamily: "Inter_400Regular", lineHeight: 20 },
-  deletedText: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-    fontStyle: "italic",
-  },
-  attachmentsContainer: { marginTop: 8, gap: 6 },
-  attachment: {
+
+  voiceWrap: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
+    paddingVertical: 8,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 10,
+    minWidth: 200,
+    marginBottom: 4,
   },
-  attachmentText: { fontSize: 13, fontFamily: "Inter_500Medium", flex: 1 },
-  messageMeta: {
+  voiceBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  voiceBars: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    marginTop: 3,
-    marginHorizontal: 4,
+    height: 24,
   },
-  timeText: { fontSize: 10, fontFamily: "Inter_400Regular" },
-  actionBtn: { padding: 2 },
-  emptyState: { alignItems: "center", justifyContent: "center", paddingTop: 80 },
+  voiceTime: { fontSize: 11, fontFamily: "Inter_500Medium" },
+
+  fileWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 10,
+    minWidth: 220,
+    marginBottom: 4,
+  },
+  fileIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fileName: { fontSize: 13.5, fontFamily: "Inter_600SemiBold" },
+  fileMeta: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 1 },
+
+  empty: { alignItems: "center", paddingVertical: 80 },
   emptyIcon: {
-    width: 84,
-    height: 84,
-    borderRadius: 42,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 16,
   },
-  emptyTitle: {
-    fontSize: 17,
-    fontFamily: "Inter_600SemiBold",
-    marginBottom: 4,
-  },
-  emptyText: { fontSize: 13, fontFamily: "Inter_400Regular" },
+  emptyTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold", marginBottom: 4 },
+  emptySub: { fontSize: 13, fontFamily: "Inter_400Regular" },
+
   replyBar: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
     paddingVertical: 10,
-    borderTopWidth: 1,
+    borderTopWidth: StyleSheet.hairlineWidth,
     gap: 10,
   },
   replyBarLine: { width: 3, height: 32, borderRadius: 2 },
-  replyBarContent: { flex: 1 },
-  replyBarAuthor: {
-    fontSize: 12,
-    fontFamily: "Inter_600SemiBold",
-    marginBottom: 2,
-  },
+  replyBarTitle: { fontSize: 12, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
   replyBarText: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  inputContainer: {
+
+  attachPanel: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  attachItem: { alignItems: "center", gap: 8 },
+  attachIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  attachLabel: { fontSize: 12, fontFamily: "Inter_500Medium" },
+
+  inputBar: {
     flexDirection: "row",
     alignItems: "flex-end",
     paddingHorizontal: 10,
     paddingTop: 8,
-    borderTopWidth: 1,
+    borderTopWidth: StyleSheet.hairlineWidth,
     gap: 8,
   },
   iconBtn: {
@@ -708,43 +1247,71 @@ const styles = StyleSheet.create({
   inputWrap: {
     flex: 1,
     flexDirection: "row",
-    alignItems: "flex-end",
+    alignItems: "center",
     borderRadius: 22,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 14,
-    paddingVertical: Platform.OS === "ios" ? 8 : 4,
-    minHeight: 42,
+    paddingVertical: Platform.OS === "ios" ? 10 : 6,
+    minHeight: 38,
     maxHeight: 120,
   },
   input: {
     flex: 1,
     fontSize: 15,
     fontFamily: "Inter_400Regular",
-    paddingVertical: Platform.OS === "ios" ? 4 : 6,
-    maxHeight: 100,
+    paddingVertical: 0,
   },
-  emojiBtn: { paddingLeft: 8, paddingBottom: 4 },
   sendBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 2,
   },
-  attachmentOptions: {
+
+  recordBar: {
     flexDirection: "row",
-    justifyContent: "space-around",
-    paddingVertical: 16,
-    borderTopWidth: 1,
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: 12,
   },
-  attachmentOption: { alignItems: "center", gap: 6 },
-  attachmentIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+  recordBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
   },
-  attachmentLabel: { fontSize: 12, fontFamily: "Inter_500Medium" },
+  recordCenter: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    justifyContent: "center",
+  },
+  recordDot: { width: 10, height: 10, borderRadius: 5 },
+  recordTime: { fontSize: 14, fontFamily: "Inter_500Medium" },
+
+  previewBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  previewClose: {
+    position: "absolute",
+    top: 50,
+    right: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 10,
+  },
+  previewImage: { width: "100%", height: "85%" },
 });

@@ -1,35 +1,30 @@
 import { Feather } from "@expo/vector-icons";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Stack, router, useLocalSearchParams } from "expo-router";
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
-  Platform,
-  ScrollView,
+  Alert,
+  FlatList,
+  Pressable,
   StyleSheet,
   Text,
   TextInput,
+  TouchableOpacity,
   View,
-  Pressable,
-  Switch,
-  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useApi } from "@/hooks/useApi";
-import { useColors } from "@/hooks/useColors";
-import { Card } from "@/components/ui/Card";
+
 import { Button } from "@/components/ui/Button";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { useApi } from "@/hooks/useApi";
+import { useAuth } from "@/context/AuthContext";
+import { useColors } from "@/hooks/useColors";
 
-interface User {
+interface UserItem {
   id: string;
   name: string;
   email: string;
-  role: string;
-}
-
-interface Category {
-  id: string;
-  name: string;
+  role?: string;
 }
 
 type ChatType = "INDIVIDUAL" | "GROUP";
@@ -38,314 +33,371 @@ export default function NewChatScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { request } = useApi();
+  const { user: me } = useAuth();
   const qc = useQueryClient();
-  const { type } = useLocalSearchParams<{ type: ChatType }>();
-  
-  const isGroup = type === "GROUP";
+  const params = useLocalSearchParams<{ type?: ChatType }>();
+
+  const [chatType, setChatType] = useState<ChatType>(params.type ?? "INDIVIDUAL");
   const [chatName, setChatName] = useState("");
-  const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState<string>("");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
 
-  const { data: usersData, isLoading: usersLoading } = useQuery({
+  const usersQuery = useQuery({
     queryKey: ["users"],
-    queryFn: () => request<{ users: User[] }>("/users"),
-    retry: 1,
+    queryFn: () => request<{ users: UserItem[] }>("/users"),
   });
 
-  // Fetch user's committees for group chat creation
-  const { data: committeesData, isLoading: committeesLoading } = useQuery({
-    queryKey: ["user-committees"],
-    queryFn: () => request<{ committees: Category[] }>("/categories"),
-    retry: 1,
-    enabled: isGroup,
-  });
+  const filtered = useMemo(() => {
+    const all = (usersQuery.data?.users ?? []).filter((u) => u.id !== me?.id);
+    if (!search.trim()) return all;
+    const q = search.toLowerCase();
+    return all.filter(
+      (u) =>
+        u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q),
+    );
+  }, [usersQuery.data, search, me?.id]);
 
-  const createMutation = useMutation({
+  const create = useMutation({
     mutationFn: () =>
-      request("/chats", {
+      request<{ chat: { id: string } }>("/chats", {
         method: "POST",
         body: JSON.stringify({
-          type: isGroup ? "GROUP" : "INDIVIDUAL",
-          name: isGroup ? chatName : undefined,
-          memberIds: selectedUsers,
-          categoryId: isGroup ? selectedCategory : undefined,
+          type: chatType,
+          name: chatType === "GROUP" ? chatName.trim() : undefined,
+          memberIds: selected,
         }),
       }),
-    onSuccess: (data: { chat: { id: string } }) => {
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["chats"] });
-      router.replace({ pathname: "/chat/[id]", params: { id: data.chat.id } });
+      router.replace(`/chat/${data.chat.id}`);
     },
-    onError: (error: Error) => {
-      Alert.alert("Error", error.message || "Failed to create chat");
-    },
+    onError: (e: Error) =>
+      Alert.alert("Couldn't create chat", e.message ?? "Try again"),
   });
 
-  const toggleUser = (userId: string) => {
-    if (!isGroup) {
-      // For direct chat, only allow one user
-      setSelectedUsers([userId]);
+  const toggleUser = (uid: string) => {
+    if (chatType === "INDIVIDUAL") {
+      setSelected([uid]);
     } else {
-      setSelectedUsers((prev) =>
-        prev.includes(userId) ? prev.filter((id) => id !== userId) : [...prev, userId]
+      setSelected((prev) =>
+        prev.includes(uid) ? prev.filter((id) => id !== uid) : [...prev, uid],
       );
     }
   };
 
-  const filteredUsers = usersData?.users?.filter(
-    (user: User) =>
-      user.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      user.email.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
-  const getInitials = (name: string) => {
-    return name
+  const initials = (n: string) =>
+    n
       .split(" ")
-      .map((n) => n[0])
+      .map((p) => p[0])
       .join("")
       .toUpperCase()
       .slice(0, 2);
-  };
 
-  const paddingBottom = Platform.OS === "web" ? 34 : insets.bottom + 24;
-
-  if (usersLoading || (isGroup && committeesLoading)) return <LoadingSpinner />;
+  const canCreate =
+    selected.length > 0 &&
+    (chatType !== "GROUP" || chatName.trim().length > 0);
 
   return (
-    <>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       <Stack.Screen
         options={{
-          title: "New Message",
+          title: chatType === "GROUP" ? "New group" : "New message",
           headerStyle: { backgroundColor: colors.primary },
           headerTintColor: "#fff",
+          presentation: "modal",
         }}
       />
-      <ScrollView
-        style={[styles.scroll, { backgroundColor: colors.background }]}
-        contentContainerStyle={{ paddingBottom }}
-        showsVerticalScrollIndicator={false}
+
+      <View
+        style={[
+          styles.typeRow,
+          { backgroundColor: colors.secondary, marginTop: 12 },
+        ]}
       >
-        <View style={styles.content}>
-          {/* Chat Type Toggle */}
-          <Card style={[styles.typeCard, { borderColor: colors.border }]}>
-            <View style={styles.typeRow}>
-              <View style={styles.typeLabel}>
-                <Text style={[styles.typeTitle, { color: colors.foreground }]}>
-                  {isGroup ? "Group Chat" : "Direct Message"}
-                </Text>
-                <Text style={[styles.typeSubtitle, { color: colors.mutedForeground }]}>
-                  {isGroup ? "Chat with multiple people" : "Private conversation"}
-                </Text>
-              </View>
-              <Text style={{ color: colors.mutedForeground, fontSize: 12 }}>
-                {isGroup ? "Creating Group Chat" : "Creating Individual Chat"}
-              </Text>
-            </View>
-          </Card>
-
-          {/* Group Chat Name */}
-          {isGroup && (
-            <View style={styles.fieldGroup}>
-              <Text style={[styles.label, { color: colors.foreground }]}>
-                Chat Name <Text style={{ color: colors.destructive }}>*</Text>
-              </Text>
-              <TextInput
-                style={[styles.input, { borderColor: colors.border, backgroundColor: colors.secondary, color: colors.foreground }]}
-                placeholder="e.g., Board Discussion"
-                placeholderTextColor={colors.mutedForeground}
-                value={chatName}
-                onChangeText={setChatName}
+        {(["INDIVIDUAL", "GROUP"] as ChatType[]).map((t) => {
+          const active = chatType === t;
+          return (
+            <TouchableOpacity
+              key={t}
+              activeOpacity={0.85}
+              onPress={() => {
+                setChatType(t);
+                if (t === "INDIVIDUAL" && selected.length > 1) {
+                  setSelected(selected.slice(0, 1));
+                }
+              }}
+              style={[
+                styles.typeBtn,
+                active && {
+                  backgroundColor: colors.background,
+                  shadowColor: "#000",
+                  shadowOffset: { width: 0, height: 1 },
+                  shadowOpacity: 0.08,
+                  shadowRadius: 3,
+                  elevation: 2,
+                },
+              ]}
+            >
+              <Feather
+                name={t === "INDIVIDUAL" ? "user" : "users"}
+                size={15}
+                color={active ? colors.primary : colors.mutedForeground}
               />
-            </View>
-          )}
-
-          {/* Committee Selection for Group */}
-          {isGroup && (
-            <View style={styles.fieldGroup}>
-              <Text style={[styles.label, { color: colors.foreground }]}>Link to Committee (Optional)</Text>
-              <View style={[styles.selectContainer, { borderColor: colors.border, backgroundColor: colors.secondary }]}>
-                <Pressable
-                  style={[styles.selectOption, !selectedCategory && { backgroundColor: colors.primary }]}
-                  onPress={() => setSelectedCategory("")}
-                >
-                  <Text style={[styles.selectText, { color: !selectedCategory ? "#fff" : colors.foreground }]}>
-                    No Committee
-                  </Text>
-                </Pressable>
-                {committeesData?.committees?.map((cat: Category) => (
-                  <Pressable
-                    key={cat.id}
-                    style={[styles.selectOption, selectedCategory === cat.id && { backgroundColor: colors.primary }]}
-                    onPress={() => setSelectedCategory(cat.id)}
-                  >
-                    <Text style={[styles.selectText, { color: selectedCategory === cat.id ? "#fff" : colors.foreground }]}>
-                      {cat.name}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          )}
-
-          {/* Search Users */}
-          <View style={styles.fieldGroup}>
-            <Text style={[styles.label, { color: colors.foreground }]}>
-              Select {isGroup ? "Participants" : "Person"}
-              {isGroup && <Text style={{ color: colors.destructive }}> *</Text>}
-            </Text>
-            <View style={[styles.searchBox, { borderColor: colors.border, backgroundColor: colors.secondary }]}>
-              <Feather name="search" size={16} color={colors.mutedForeground} />
-              <TextInput
-                style={[styles.searchInput, { color: colors.foreground }]}
-                placeholder="Search by name or email..."
-                placeholderTextColor={colors.mutedForeground}
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-              />
-              {searchQuery && (
-                <Pressable onPress={() => setSearchQuery("")}>
-                  <Feather name="x" size={16} color={colors.mutedForeground} />
-                </Pressable>
-              )}
-            </View>
-          </View>
-
-          {/* Selected Count */}
-          {selectedUsers.length > 0 && (
-            <View style={[styles.selectedBar, { backgroundColor: colors.accent }]}>
-              <Text style={[styles.selectedText, { color: colors.primary }]}>
-                {selectedUsers.length} {selectedUsers.length === 1 ? "person" : "people"} selected
+              <Text
+                style={[
+                  styles.typeLabel,
+                  { color: active ? colors.primary : colors.mutedForeground },
+                ]}
+              >
+                {t === "INDIVIDUAL" ? "Direct" : "Group"}
               </Text>
-              <Pressable onPress={() => setSelectedUsers([])}>
-                <Text style={[styles.clearText, { color: colors.destructive }]}>Clear</Text>
-              </Pressable>
-            </View>
-          )}
+            </TouchableOpacity>
+          );
+        })}
+      </View>
 
-          {/* User List */}
-          <View style={styles.usersList}>
-            {filteredUsers?.map((user: User) => {
-              const isSelected = selectedUsers.includes(user.id);
-              return (
-                <Pressable
-                  key={user.id}
-                  style={[styles.userRow, { borderBottomColor: colors.border }]}
-                  onPress={() => toggleUser(user.id)}
-                >
-                  <View style={styles.userLeft}>
-                    <View style={[styles.userAvatar, { backgroundColor: colors.primary }]}>
-                      <Text style={styles.avatarText}>{getInitials(user.name)}</Text>
-                    </View>
-                    <View>
-                      <Text style={[styles.userName, { color: colors.foreground }]}>{user.name}</Text>
-                      <Text style={[styles.userEmail, { color: colors.mutedForeground }]}>{user.email}</Text>
-                    </View>
-                  </View>
-                  <View
-                    style={[
-                      styles.checkbox,
-                      {
-                        borderColor: isSelected ? colors.primary : colors.border,
-                        backgroundColor: isSelected ? colors.primary : "transparent",
-                      },
-                    ]}
-                  >
-                    {isSelected && <Feather name="check" size={14} color="#fff" />}
-                  </View>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          {/* Empty State */}
-          {filteredUsers?.length === 0 && (
-            <View style={styles.emptyState}>
-              <Feather name="users" size={40} color={colors.mutedForeground} />
-              <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
-                No users found matching your search
-              </Text>
-            </View>
-          )}
-
-          {/* Create Button */}
-          <Button
-            variant="primary"
-            size="md"
-            onPress={() => createMutation.mutate()}
-            loading={createMutation.isPending}
-            disabled={selectedUsers.length === 0 || (isGroup && !chatName.trim())}
-            fullWidth
-            style={{ marginTop: 24 }}
-          >
-            {isGroup ? "Create Group Chat" : "Start Conversation"}
-          </Button>
+      {chatType === "GROUP" && (
+        <View style={styles.groupNameWrap}>
+          <Text style={[styles.label, { color: colors.foreground }]}>
+            Group name
+          </Text>
+          <TextInput
+            value={chatName}
+            onChangeText={setChatName}
+            placeholder="e.g., Risk Committee"
+            placeholderTextColor={colors.mutedForeground}
+            style={[
+              styles.groupNameInput,
+              {
+                color: colors.foreground,
+                backgroundColor: colors.secondary,
+                borderColor: colors.border,
+              },
+            ]}
+          />
         </View>
-      </ScrollView>
-    </>
+      )}
+
+      <View
+        style={[
+          styles.searchWrap,
+          { backgroundColor: colors.secondary, borderColor: colors.border },
+        ]}
+      >
+        <Feather name="search" size={17} color={colors.mutedForeground} />
+        <TextInput
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search people"
+          placeholderTextColor={colors.mutedForeground}
+          style={[styles.searchInput, { color: colors.foreground }]}
+        />
+        {search.length > 0 && (
+          <Pressable onPress={() => setSearch("")} hitSlop={10}>
+            <Feather name="x-circle" size={17} color={colors.mutedForeground} />
+          </Pressable>
+        )}
+      </View>
+
+      {selected.length > 0 && (
+        <View
+          style={[
+            styles.selectedBar,
+            { backgroundColor: colors.accent },
+          ]}
+        >
+          <Text style={[styles.selectedText, { color: colors.primary }]}>
+            {selected.length}{" "}
+            {selected.length === 1 ? "person" : "people"} selected
+          </Text>
+          <Pressable onPress={() => setSelected([])}>
+            <Text style={[styles.clearText, { color: colors.destructive }]}>
+              Clear
+            </Text>
+          </Pressable>
+        </View>
+      )}
+
+      {usersQuery.isLoading ? (
+        <LoadingSpinner />
+      ) : (
+        <FlatList
+          data={filtered}
+          keyExtractor={(u) => u.id}
+          contentContainerStyle={{
+            paddingBottom: insets.bottom + 120,
+          }}
+          ItemSeparatorComponent={() => (
+            <View
+              style={{
+                height: StyleSheet.hairlineWidth,
+                marginLeft: 76,
+                backgroundColor: colors.border,
+              }}
+            />
+          )}
+          renderItem={({ item }) => {
+            const sel = selected.includes(item.id);
+            return (
+              <Pressable
+                onPress={() => toggleUser(item.id)}
+                android_ripple={{ color: colors.muted }}
+                style={({ pressed }) => [
+                  styles.userRow,
+                  { backgroundColor: pressed ? colors.muted : "transparent" },
+                ]}
+              >
+                <View style={[styles.userAvatar, { backgroundColor: colors.primary }]}>
+                  <Text style={styles.userAvatarText}>
+                    {initials(item.name)}
+                  </Text>
+                </View>
+                <View style={styles.userBody}>
+                  <Text
+                    style={[styles.userName, { color: colors.foreground }]}
+                    numberOfLines={1}
+                  >
+                    {item.name}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.userEmail,
+                      { color: colors.mutedForeground },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {item.email}
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.checkbox,
+                    {
+                      backgroundColor: sel ? colors.primary : "transparent",
+                      borderColor: sel ? colors.primary : colors.border,
+                    },
+                  ]}
+                >
+                  {sel && <Feather name="check" size={14} color="#fff" />}
+                </View>
+              </Pressable>
+            );
+          }}
+          ListEmptyComponent={
+            <View style={styles.emptyState}>
+              <Feather name="users" size={36} color={colors.mutedForeground} />
+              <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
+                No people found
+              </Text>
+            </View>
+          }
+        />
+      )}
+
+      <View
+        style={[
+          styles.footer,
+          {
+            paddingBottom: insets.bottom + 12,
+            backgroundColor: colors.background,
+            borderTopColor: colors.border,
+          },
+        ]}
+      >
+        <Button
+          variant="primary"
+          fullWidth
+          onPress={() => create.mutate()}
+          loading={create.isPending}
+          disabled={!canCreate || create.isPending}
+        >
+          {chatType === "GROUP" ? "Create group" : "Start conversation"}
+        </Button>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  scroll: { flex: 1 },
-  content: { padding: 16 },
-  typeCard: { marginBottom: 16 },
-  typeRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  typeLabel: { flex: 1 },
-  typeTitle: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
-  typeSubtitle: { fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 2 },
-  fieldGroup: { marginBottom: 16 },
-  label: { fontSize: 14, fontFamily: "Inter_500Medium", marginBottom: 8 },
-  input: {
-    borderWidth: 1,
-    borderRadius: 10,
+  container: { flex: 1 },
+  typeRow: {
+    flexDirection: "row",
+    marginHorizontal: 16,
+    padding: 4,
+    borderRadius: 12,
+    gap: 4,
+  },
+  typeBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 10,
+    borderRadius: 9,
+    gap: 6,
+  },
+  typeLabel: { fontSize: 13.5, fontFamily: "Inter_600SemiBold" },
+  groupNameWrap: { paddingHorizontal: 16, marginTop: 16 },
+  label: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    marginBottom: 8,
+  },
+  groupNameInput: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 15,
     fontFamily: "Inter_400Regular",
   },
-  selectContainer: { borderWidth: 1, borderRadius: 10, padding: 8, gap: 6 },
-  selectOption: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 },
-  selectText: { fontSize: 14, fontFamily: "Inter_400Regular" },
-  searchBox: {
+  searchWrap: {
     flexDirection: "row",
     alignItems: "center",
-    borderWidth: 1,
-    borderRadius: 10,
+    marginHorizontal: 16,
+    marginTop: 16,
     paddingHorizontal: 12,
-    height: 44,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
     gap: 8,
   },
-  searchInput: { flex: 1, fontSize: 15, fontFamily: "Inter_400Regular", height: 44 },
+  searchInput: { flex: 1, fontSize: 15, fontFamily: "Inter_400Regular" },
   selectedBar: {
+    marginHorizontal: 16,
+    marginTop: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 8,
-    marginBottom: 12,
   },
-  selectedText: { fontSize: 14, fontFamily: "Inter_500Medium" },
+  selectedText: { fontSize: 13.5, fontFamily: "Inter_600SemiBold" },
   clearText: { fontSize: 13, fontFamily: "Inter_500Medium" },
-  usersList: { gap: 0 },
+
   userRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
     paddingVertical: 12,
-    borderBottomWidth: 1,
+    paddingHorizontal: 16,
+    gap: 12,
   },
-  userLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
   userAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
   },
-  avatarText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  userName: { fontSize: 15, fontFamily: "Inter_500Medium" },
-  userEmail: { fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 1 },
+  userAvatarText: {
+    color: "#fff",
+    fontSize: 14,
+    fontFamily: "Inter_700Bold",
+  },
+  userBody: { flex: 1 },
+  userName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  userEmail: { fontSize: 12.5, fontFamily: "Inter_400Regular", marginTop: 2 },
   checkbox: {
     width: 24,
     height: 24,
@@ -354,6 +406,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  emptyState: { alignItems: "center", paddingVertical: 40 },
-  emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", marginTop: 12 },
+  emptyState: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 60,
+    gap: 8,
+  },
+  emptyText: { fontSize: 13.5, fontFamily: "Inter_400Regular" },
+  footer: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
 });
