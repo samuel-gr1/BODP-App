@@ -149,10 +149,10 @@ export default function HomeScreen() {
               onPress={() => router.push("/(tabs)/meetings")}
             />
             <QuickActionButton
-              icon="file-plus"
-              label="Submit Form"
+              icon="grid"
+              label="My QR"
               color={colors.success}
-              onPress={() => router.push("/(tabs)/forms")}
+              onPress={() => router.push("/(tabs)/qr")}
             />
             <QuickActionButton
               icon="folder"

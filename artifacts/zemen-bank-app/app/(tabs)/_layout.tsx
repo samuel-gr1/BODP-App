@@ -30,6 +30,10 @@ function NativeTabLayout() {
         <Icon sf={{ default: "bubble.left", selected: "bubble.left.fill" }} />
         <Label>Chat</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="qr">
+        <Icon sf={{ default: "qrcode", selected: "qrcode" }} />
+        <Label>My QR</Label>
+      </NativeTabs.Trigger>
       <NativeTabs.Trigger name="documents">
         <Icon sf={{ default: "folder", selected: "folder.fill" }} />
         <Label>Docs</Label>
@@ -155,6 +159,18 @@ function ClassicTabLayout() {
               )}
             </View>
           ),
+        }}
+      />
+      <Tabs.Screen
+        name="qr"
+        options={{
+          title: "My QR",
+          tabBarIcon: ({ color }) =>
+            isIOS ? (
+              <SymbolView name="qrcode" tintColor={color} size={22} />
+            ) : (
+              <Feather name="grid" size={22} color={color} />
+            ),
         }}
       />
       <Tabs.Screen

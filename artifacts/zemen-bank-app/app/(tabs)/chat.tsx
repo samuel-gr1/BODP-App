@@ -230,7 +230,7 @@ export default function ChatScreen() {
       </View>
 
       {/* Search */}
-      <View style={[styles.searchContainer, { backgroundColor: colors.card }]}
+      <View style={[styles.searchContainer, { backgroundColor: colors.secondary, borderColor: colors.border }]}
       >
         <Feather
           name="search"
@@ -246,46 +246,56 @@ export default function ChatScreen() {
           onChangeText={setSearch}
         />
         {search.length > 0 && (
-          <Pressable onPress={() => setSearch("")}>
+          <Pressable onPress={() => setSearch("")} hitSlop={8}>
             <Feather name="x" size={18} color={colors.textSecondary} />
           </Pressable>
         )}
       </View>
 
-      {/* Tab Navigation */}
-      <View style={styles.tabContainer}>
-        {(["INDIVIDUAL", "GROUP", "GLOBAL"] as TabType[]).map((tab) => (
-          <TouchableOpacity
-            key={tab}
-            style={[
-              styles.tab,
-              activeTab === tab && { backgroundColor: colors.primary },
-              { borderColor: colors.border, borderWidth: 1 },
-            ]}
-            onPress={() => setActiveTab(tab)}
-          >
-            <Feather
-              name={
-                tab === "INDIVIDUAL"
-                  ? "user"
-                  : tab === "GROUP"
-                  ? "users"
-                  : "globe"
-              }
-              size={14}
-              color={activeTab === tab ? "#fff" : colors.text}
-              style={{ marginRight: 6 }}
-            />
-            <Text
+      {/* Segmented Tab Navigation */}
+      <View style={[styles.segmentWrap, { backgroundColor: colors.secondary }]}>
+        {(["INDIVIDUAL", "GROUP", "GLOBAL"] as TabType[]).map((tab) => {
+          const active = activeTab === tab;
+          return (
+            <TouchableOpacity
+              key={tab}
+              activeOpacity={0.85}
               style={[
-                styles.tabText,
-                { color: activeTab === tab ? "#fff" : colors.text },
+                styles.segment,
+                active && {
+                  backgroundColor: colors.background,
+                  shadowColor: "#000",
+                  shadowOpacity: 0.08,
+                  shadowRadius: 4,
+                  shadowOffset: { width: 0, height: 1 },
+                  elevation: 2,
+                },
               ]}
+              onPress={() => setActiveTab(tab)}
             >
-              {tab === "INDIVIDUAL" ? "Individual" : tab === "GROUP" ? "Group" : "Global"}
-            </Text>
-          </TouchableOpacity>
-        ))}
+              <Feather
+                name={
+                  tab === "INDIVIDUAL"
+                    ? "user"
+                    : tab === "GROUP"
+                    ? "users"
+                    : "globe"
+                }
+                size={14}
+                color={active ? colors.primary : colors.textSecondary}
+                style={{ marginRight: 6 }}
+              />
+              <Text
+                style={[
+                  styles.tabText,
+                  { color: active ? colors.primary : colors.textSecondary },
+                ]}
+              >
+                {tab === "INDIVIDUAL" ? "Direct" : tab === "GROUP" ? "Group" : "Global"}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
       </View>
 
       {/* Create Button - Only show for Individual & Group tabs */}
@@ -358,10 +368,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     marginHorizontal: 16,
-    marginBottom: 10,
+    marginBottom: 12,
     paddingHorizontal: 12,
     paddingVertical: Platform.OS === "ios" ? 10 : 8,
-    borderRadius: 10,
+    borderRadius: 12,
+    borderWidth: 1,
   },
   searchIcon: {
     marginRight: 8,
@@ -383,6 +394,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 20,
+  },
+  segmentWrap: {
+    flexDirection: "row",
+    marginHorizontal: 16,
+    marginBottom: 12,
+    padding: 4,
+    borderRadius: 12,
+    gap: 4,
+  },
+  segment: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+    paddingVertical: 9,
+    borderRadius: 9,
   },
   tabText: {
     fontSize: 13,
