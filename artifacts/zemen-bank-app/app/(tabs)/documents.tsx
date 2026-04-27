@@ -1,7 +1,9 @@
 import { Feather } from "@expo/vector-icons";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { router } from "expo-router";
 import React, { useState } from "react";
 import {
+  Alert,
   FlatList,
   Platform,
   Pressable,
@@ -17,6 +19,7 @@ import { useColors } from "@/hooks/useColors";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { Button } from "@/components/ui/Button";
 
 interface Document {
   id: string;
@@ -44,22 +47,41 @@ function getFileIcon(mimetype: string): { icon: string; color: string } {
 export default function DocumentsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { request } = useApi();
+  const { request, downloadFile } = useApi();
+  const qc = useQueryClient();
   const [search, setSearch] = useState("");
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["documents"],
-    queryFn: () => request<{ documents: Document[] }>("/documents"),
+    queryFn: () => request<{ documents: Document[] }>("/library-documents"),
     retry: 1,
   });
 
   const documents = data?.documents ?? [];
   const filtered = documents.filter(
-    (d) =>
+    (d: Document) =>
       !search ||
       d.title.toLowerCase().includes(search.toLowerCase()) ||
       d.originalName.toLowerCase().includes(search.toLowerCase())
   );
+
+  const handleDownload = async (doc: Document) => {
+    try {
+      setDownloadingId(doc.id);
+      
+      // Use the downloadFile function from useApi hook to open in browser
+      await downloadFile(`/library-documents/${doc.id}/download`, doc.originalName);
+      
+      // Document opened in browser
+      Alert.alert("Document Opened", `Viewing: ${doc.originalName}`);
+    } catch (error: any) {
+      console.error("Open error:", error);
+      Alert.alert("Cannot Open", error.message || "Failed to open document");
+    } finally {
+      setDownloadingId(null);
+    }
+  };
 
   const paddingTop = Platform.OS === "web" ? 67 + 16 : insets.top + 16;
   const paddingBottom = Platform.OS === "web" ? 34 + 84 : 84;
@@ -88,9 +110,14 @@ export default function DocumentsScreen() {
           <View style={styles.docActions}>
             <Pressable
               style={[styles.actionIcon, { backgroundColor: colors.secondary }]}
-              onPress={() => {}}
+              onPress={() => handleDownload(item)}
+              disabled={downloadingId === item.id}
             >
-              <Feather name="download" size={14} color={colors.primary} />
+              {downloadingId === item.id ? (
+                <LoadingSpinner size="small" />
+              ) : (
+                <Feather name="external-link" size={14} color={colors.primary} />
+              )}
             </Pressable>
           </View>
         </View>

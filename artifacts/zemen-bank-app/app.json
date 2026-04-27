@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Zemen Bank Fit & Proper",
-    "slug": "zemen-bank-app",
+    "name": "Zemen BoD Portal",
+    "slug": "zemen-bodportal",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "zemen-bank-app",
+    "scheme": "zemen-bodportal",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
@@ -16,7 +16,9 @@
     "ios": {
       "supportsTablet": false
     },
-    "android": {},
+    "android": {
+      "package": "com.zemen.bodportal"
+    },
     "web": {
       "favicon": "./assets/images/icon.png"
     },
@@ -28,11 +30,21 @@
         }
       ],
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      "@react-native-community/datetimepicker",
+      "expo-secure-store"
     ],
     "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
-    }
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "origin": "https://replit.com/"
+      },
+      "eas": {
+        "projectId": "04590389-80c0-41d8-b011-220d68e1008d"
+      }
+    },
+    "owner": "samuelgr"
   }
 }

@@ -99,7 +99,7 @@ export default function HomeScreen() {
             </Text>
           </View>
         </View>
-        <Text style={styles.headerSub}>Zemen Bank Fit & Proper System</Text>
+        <Text style={styles.headerSub}>Zemen Bank BoD Portal</Text>
       </View>
 
       <View style={styles.content}>
@@ -161,10 +161,10 @@ export default function HomeScreen() {
               onPress={() => router.push("/(tabs)/documents")}
             />
             <QuickActionButton
-              icon="user"
-              label="My Profile"
+              icon="bar-chart-2"
+              label="Votes"
               color={colors.primary}
-              onPress={() => router.push("/(tabs)/profile")}
+              onPress={() => router.push("/votes")}
             />
           </View>
         </View>

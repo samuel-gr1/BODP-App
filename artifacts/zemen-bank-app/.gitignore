@@ -39,3 +39,5 @@ yarn-error.*
 .vercel
 
 .env
+
+expo-env.d.ts

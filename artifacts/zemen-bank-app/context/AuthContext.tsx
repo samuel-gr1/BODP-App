@@ -1,7 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as SecureStore from "expo-secure-store";
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 
-const API_BASE = `https://${process.env.EXPO_PUBLIC_DOMAIN}`;
+const API_BASE = process.env.EXPO_PUBLIC_API_URL || `https://${process.env.EXPO_PUBLIC_DOMAIN}`;
 
 export type UserRole = "ADMIN" | "APPROVER" | "SECRETARY" | "USER" | "OBSERVER";
 
@@ -34,14 +35,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     (async () => {
       try {
-        const [storedToken, storedUser] = await Promise.all([
-          AsyncStorage.getItem(AUTH_TOKEN_KEY),
-          AsyncStorage.getItem(AUTH_USER_KEY),
-        ]);
+        // Get token from secure storage
+        const storedToken = await SecureStore.getItemAsync(AUTH_TOKEN_KEY);
+        const storedUser = await AsyncStorage.getItem(AUTH_USER_KEY);
         if (storedToken && storedUser) {
           setToken(storedToken);
           setUser(JSON.parse(storedUser));
-          const res = await fetch(`${API_BASE}/api/auth/me`, {
+          const res = await fetch(`${API_BASE}/auth/me`, {
             headers: { Authorization: `Bearer ${storedToken}` },
           });
           if (res.ok) {
@@ -49,7 +49,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setUser(data.user);
             await AsyncStorage.setItem(AUTH_USER_KEY, JSON.stringify(data.user));
           } else {
-            await AsyncStorage.multiRemove([AUTH_TOKEN_KEY, AUTH_USER_KEY]);
+            await SecureStore.deleteItemAsync(AUTH_TOKEN_KEY);
+            await AsyncStorage.removeItem(AUTH_USER_KEY);
             setToken(null);
             setUser(null);
           }
@@ -63,20 +64,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
-    const res = await fetch(`${API_BASE}/api/auth/login`, {
+    const res = await fetch(`${API_BASE}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || "Invalid credentials");
+      throw new Error(data.error || "Login failed");
     }
+
     const data = await res.json();
-    const authToken = res.headers.get("x-auth-token") || `session-${Date.now()}`;
+
+    // Extract token from set-cookie header (auth-token=...)
+    const setCookie = res.headers.get("set-cookie");
+    let authToken: string | null = null;
+    
+    if (setCookie) {
+      // Parse auth-token from cookie string
+      const tokenMatch = setCookie.match(/auth-token=([^;]+)/);
+      if (tokenMatch) {
+        authToken = tokenMatch[1];
+      }
+    }
+    
+    // Fallback for testing
+    if (!authToken) {
+      authToken = `session-${Date.now()}`;
+    }
+    
     setUser(data.user);
     setToken(authToken);
-    await AsyncStorage.setItem(AUTH_TOKEN_KEY, authToken);
+    // Store token securely
+    await SecureStore.setItemAsync(AUTH_TOKEN_KEY, authToken);
     await AsyncStorage.setItem(AUTH_USER_KEY, JSON.stringify(data.user));
   }, []);
 
@@ -93,7 +113,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     setUser(null);
     setToken(null);
-    await AsyncStorage.multiRemove([AUTH_TOKEN_KEY, AUTH_USER_KEY]);
+    // Remove token from secure storage
+    await SecureStore.deleteItemAsync(AUTH_TOKEN_KEY);
+    await AsyncStorage.removeItem(AUTH_USER_KEY);
   }, [token]);
 
   return (

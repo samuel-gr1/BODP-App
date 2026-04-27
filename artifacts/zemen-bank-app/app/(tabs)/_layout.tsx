@@ -4,11 +4,12 @@ import { Redirect, Tabs } from "expo-router";
 import { Icon, Label, NativeTabs } from "expo-router/unstable-native-tabs";
 import { SymbolView } from "expo-symbols";
 import { Feather } from "@expo/vector-icons";
-import React from "react";
-import { Platform, StyleSheet, View, useColorScheme } from "react-native";
+import React, { useState, useEffect } from "react";
+import { Platform, StyleSheet, Text, View, useColorScheme } from "react-native";
 import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/context/AuthContext";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { useApi } from "@/hooks/useApi";
 
 function NativeTabLayout() {
   return (
@@ -18,12 +19,16 @@ function NativeTabLayout() {
         <Label>Home</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="meetings">
-        <Icon sf={{ default: "calendar", selected: "calendar.fill" }} />
+        <Icon sf={{ default: "calendar", selected: "calendar" }} />
         <Label>Meetings</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="forms">
         <Icon sf={{ default: "doc.text", selected: "doc.text.fill" }} />
         <Label>Forms</Label>
+      </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="chat">
+        <Icon sf={{ default: "bubble.left", selected: "bubble.left.fill" }} />
+        <Label>Chat</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="documents">
         <Icon sf={{ default: "folder", selected: "folder.fill" }} />
@@ -43,6 +48,25 @@ function ClassicTabLayout() {
   const isDark = colorScheme === "dark";
   const isIOS = Platform.OS === "ios";
   const isWeb = Platform.OS === "web";
+  const { request } = useApi();
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  // Fetch unread messages count
+  useEffect(() => {
+    const fetchUnreadCount = async () => {
+      try {
+        const response = await request<{ unreadCount: number }>("/chats/unread-count", "GET");
+        setUnreadCount(response.unreadCount || 0);
+      } catch {
+        // Silently fail - unread badge is not critical
+      }
+    };
+    
+    fetchUnreadCount();
+    // Poll every 30 seconds for unread messages
+    const interval = setInterval(fetchUnreadCount, 30000);
+    return () => clearInterval(interval);
+  }, [request]);
 
   return (
     <Tabs
@@ -112,6 +136,28 @@ function ClassicTabLayout() {
         }}
       />
       <Tabs.Screen
+        name="chat"
+        options={{
+          title: "Chat",
+          tabBarIcon: ({ color, focused }) => (
+            <View style={styles.iconContainer}>
+              {isIOS ? (
+                <SymbolView name="bubble.left" tintColor={color} size={22} />
+              ) : (
+                <Feather name="message-circle" size={22} color={color} />
+              )}
+              {unreadCount > 0 && !focused && (
+                <View style={[styles.badge, { backgroundColor: colors.primary }]}>
+                  <Text style={styles.badgeText}>
+                    {unreadCount > 99 ? "99+" : unreadCount}
+                  </Text>
+                </View>
+              )}
+            </View>
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="documents"
         options={{
           title: "Docs",
@@ -138,6 +184,28 @@ function ClassicTabLayout() {
     </Tabs>
   );
 }
+
+const styles = StyleSheet.create({
+  iconContainer: {
+    position: "relative",
+  },
+  badge: {
+    position: "absolute",
+    top: -5,
+    right: -8,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 3,
+  },
+  badgeText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "bold",
+  },
+});
 
 export default function TabLayout() {
   const { isAuthenticated, isLoading } = useAuth();

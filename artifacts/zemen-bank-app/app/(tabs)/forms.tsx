@@ -1,7 +1,9 @@
 import { Feather } from "@expo/vector-icons";
-import { useQuery } from "@tanstack/react-query";
-import React from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { router } from "expo-router";
+import React, { useState } from "react";
 import {
+  Alert,
   FlatList,
   Platform,
   Pressable,
@@ -13,6 +15,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useApi } from "@/hooks/useApi";
 import { useColors } from "@/hooks/useColors";
+import { useAuth } from "@/context/AuthContext";
 import { Card } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -45,10 +48,21 @@ const SECTION_LABELS: Record<string, string> = {
   PROPRIETY_TEST: "Propriety Test",
 };
 
+const SECTION_ROUTES: Record<string, string> = {
+  GENERAL_INFO: "/forms/general-info",
+  PERSONAL_INFO: "/forms/personal-info",
+  BUSINESS_ACTIVITIES: "/forms/business-activities",
+  FINANCIAL_INFORMATION: "/forms/financial-info",
+  PROPRIETY_TEST: "/forms/propriety-test",
+};
+
 export default function FormsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { request } = useApi();
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  const [selectedSubmission, setSelectedSubmission] = useState<string | null>(null);
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["submissions"],
@@ -58,8 +72,54 @@ export default function FormsScreen() {
 
   const submissions = data?.submissions ?? [];
 
+  const createMutation = useMutation({
+    mutationFn: () => request<{ submission: Submission }>("/form-submissions", {
+      method: "POST",
+      body: JSON.stringify({ action: "create_new" }),
+    }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["submissions"] });
+      setSelectedSubmission(data.submission.id);
+    },
+  });
+
+  const submitMutation = useMutation({
+    mutationFn: (submissionId: string) =>
+      request("/form-submissions/submit", {
+        method: "POST",
+        body: JSON.stringify({ submissionId }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["submissions"] });
+      Alert.alert("Success", "Your Fit & Proper assessment has been submitted for review.");
+    },
+    onError: (error: Error) => {
+      Alert.alert("Error", error.message || "Failed to submit. Please ensure all sections are complete.");
+    },
+  });
+
   const paddingTop = Platform.OS === "web" ? 67 + 16 : insets.top + 16;
   const paddingBottom = Platform.OS === "web" ? 34 + 84 : 84;
+
+  const handleSectionPress = (sectionName: string, submissionId: string) => {
+    setSelectedSubmission(submissionId);
+    router.push(SECTION_ROUTES[sectionName] as any);
+  };
+
+  const handleSubmit = (submissionId: string) => {
+    Alert.alert(
+      "Submit Assessment",
+      "Are you sure you want to submit your Fit & Proper assessment? This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Submit",
+          style: "default",
+          onPress: () => submitMutation.mutate(submissionId),
+        },
+      ]
+    );
+  };
 
   const renderItem = ({ item }: { item: Submission }) => (
     <Card style={styles.card}>
@@ -87,19 +147,25 @@ export default function FormsScreen() {
       <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
       <Text style={[styles.sectionTitle, { color: colors.mutedForeground }]}>
-        Form Sections
+        Form Sections - Tap to Edit
       </Text>
       <View style={styles.sections}>
-        {SECTION_NAMES.map((sn, i) => (
-          <View key={sn} style={[styles.sectionRow, { borderBottomColor: colors.border, borderBottomWidth: i < SECTION_NAMES.length - 1 ? 1 : 0 }]}>
-            <View style={[styles.sectionNumber, { backgroundColor: colors.secondary }]}>
-              <Text style={[styles.sectionNumberText, { color: colors.mutedForeground }]}>{i + 1}</Text>
+        {SECTION_NAMES.map((sn, i: number) => (
+          <Pressable
+            key={sn}
+            onPress={() => item.status === "DRAFT" && handleSectionPress(sn, item.id)}
+            disabled={item.status !== "DRAFT"}
+          >
+            <View style={[styles.sectionRow, { borderBottomColor: colors.border, borderBottomWidth: i < SECTION_NAMES.length - 1 ? 1 : 0, opacity: item.status === "DRAFT" ? 1 : 0.6 }]}>
+              <View style={[styles.sectionNumber, { backgroundColor: colors.secondary }]}>
+                <Text style={[styles.sectionNumberText, { color: colors.mutedForeground }]}>{i + 1}</Text>
+              </View>
+              <Text style={[styles.sectionName, { color: colors.foreground }]}>
+                {SECTION_LABELS[sn]}
+              </Text>
+              {item.status === "DRAFT" && <Feather name="chevron-right" size={14} color={colors.mutedForeground} />}
             </View>
-            <Text style={[styles.sectionName, { color: colors.foreground }]}>
-              {SECTION_LABELS[sn]}
-            </Text>
-            <Feather name="chevron-right" size={14} color={colors.mutedForeground} />
-          </View>
+          </Pressable>
         ))}
       </View>
 
@@ -114,8 +180,14 @@ export default function FormsScreen() {
 
       {item.status === "DRAFT" && (
         <View style={styles.actions}>
-          <Button variant="primary" size="sm" onPress={() => {}} fullWidth>
-            Continue Submission
+          <Button 
+            variant="primary" 
+            size="sm" 
+            onPress={() => handleSubmit(item.id)} 
+            loading={submitMutation.isPending}
+            fullWidth
+          >
+            Submit for Approval
           </Button>
         </View>
       )}
@@ -151,11 +223,12 @@ export default function FormsScreen() {
                   </Text>
                 </View>
               </Card>
-              {submissions.length === 0 && (
+              {(submissions.length === 0 || submissions.every(s => s.status !== "DRAFT")) && (
                 <Button
                   variant="primary"
                   size="md"
-                  onPress={() => {}}
+                  onPress={() => createMutation.mutate()}
+                  loading={createMutation.isPending}
                   fullWidth
                   style={{ marginTop: 12 }}
                 >

@@ -1,109 +1,109 @@
 const colors = {
   light: {
-    text: "#0F172A",
-    tint: "#1E40AF",
+    text: "#111827",
+    tint: "#ff0000",
 
-    background: "#F8FAFC",
-    foreground: "#0F172A",
+    background: "#F9FAFB",
+    foreground: "#111827",
 
     card: "#FFFFFF",
-    cardForeground: "#0F172A",
+    cardForeground: "#111827",
 
-    primary: "#1E3A5F",
+    primary: "#ff0000",
     primaryForeground: "#FFFFFF",
 
-    secondary: "#F1F5F9",
-    secondaryForeground: "#1E293B",
+    secondary: "#F3F4F6",
+    secondaryForeground: "#374151",
 
-    muted: "#F1F5F9",
-    mutedForeground: "#64748B",
+    muted: "#F3F4F6",
+    mutedForeground: "#6B7280",
 
-    accent: "#EFF6FF",
-    accentForeground: "#1E3A5F",
+    accent: "#FEF2F2",
+    accentForeground: "#991B1B",
 
-    destructive: "#EF4444",
+    destructive: "#ff0000",
     destructiveForeground: "#FFFFFF",
 
-    border: "#E2E8F0",
-    input: "#E2E8F0",
+    border: "#E5E7EB",
+    input: "#E5E7EB",
 
     success: "#16A34A",
     successLight: "#DCFCE7",
     warning: "#D97706",
     warningLight: "#FEF3C7",
-    info: "#2563EB",
-    infoLight: "#DBEAFE",
+    info: "#ff0000",
+    infoLight: "#FEE2E2",
     errorLight: "#FEE2E2",
 
     gold: "#C8973A",
     goldLight: "#FEF9EC",
 
-    statusScheduled: "#3B82F6",
-    statusInProgress: "#F59E0B",
-    statusCompleted: "#10B981",
-    statusCancelled: "#EF4444",
+    statusScheduled: "#6B7280",
+    statusInProgress: "#D97706",
+    statusCompleted: "#16A34A",
+    statusCancelled: "#ff0000",
 
     voteYes: "#16A34A",
-    voteNo: "#EF4444",
-    voteAbstain: "#94A3B8",
+    voteNo: "#ff0000",
+    voteAbstain: "#6B7280",
 
     tabBar: "#FFFFFF",
-    headerBg: "#1E3A5F",
+    headerBg: "#ff0000",
     headerText: "#FFFFFF",
   },
   dark: {
-    text: "#F8FAFC",
-    tint: "#60A5FA",
+    text: "#F9FAFB",
+    tint: "#ff0000",
 
-    background: "#0F172A",
-    foreground: "#F8FAFC",
+    background: "#111827",
+    foreground: "#F9FAFB",
 
-    card: "#1E293B",
-    cardForeground: "#F8FAFC",
+    card: "#1F2937",
+    cardForeground: "#F9FAFB",
 
-    primary: "#3B82F6",
+    primary: "#ff0000",
     primaryForeground: "#FFFFFF",
 
-    secondary: "#1E293B",
-    secondaryForeground: "#F1F5F9",
+    secondary: "#1F2937",
+    secondaryForeground: "#F3F4F6",
 
-    muted: "#1E293B",
-    mutedForeground: "#94A3B8",
+    muted: "#1F2937",
+    mutedForeground: "#9CA3AF",
 
-    accent: "#1E293B",
-    accentForeground: "#93C5FD",
+    accent: "#1F2937",
+    accentForeground: "#FCA5A5",
 
     destructive: "#F87171",
     destructiveForeground: "#FFFFFF",
 
-    border: "#334155",
-    input: "#334155",
+    border: "#374151",
+    input: "#374151",
 
     success: "#4ADE80",
     successLight: "#052E16",
     warning: "#FCD34D",
     warningLight: "#1C1917",
-    info: "#60A5FA",
-    infoLight: "#0C1930",
+    info: "#ff0000",
+    infoLight: "#1C0A0A",
     errorLight: "#1C0A0A",
 
     gold: "#FBB040",
     goldLight: "#1A1200",
 
-    statusScheduled: "#60A5FA",
+    statusScheduled: "#9CA3AF",
     statusInProgress: "#FCD34D",
     statusCompleted: "#4ADE80",
     statusCancelled: "#F87171",
 
     voteYes: "#4ADE80",
     voteNo: "#F87171",
-    voteAbstain: "#94A3B8",
+    voteAbstain: "#9CA3AF",
 
-    tabBar: "#1E293B",
-    headerBg: "#0F172A",
-    headerText: "#F8FAFC",
+    tabBar: "#1F2937",
+    headerBg: "#111827",
+    headerText: "#F9FAFB",
   },
-  radius: 12,
+  radius: 8,
 };
 
 export default colors;

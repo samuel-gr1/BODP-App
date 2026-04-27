@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { router, useLocalSearchParams, Stack } from "expo-router";
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Alert,
   Platform,
@@ -95,17 +95,89 @@ export default function MeetingDetailScreen() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["meeting", id] }),
   });
 
+  const commentMutation = useMutation({
+    mutationFn: (content: string) =>
+      request(`/meetings/${id}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ content }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["meetings", id, "comments"] });
+    },
+  });
+
+  const attendanceMutation = useMutation({
+    mutationFn: (attendance: any) =>
+      request(`/meetings/${id}/participants`, {
+        method: "POST",
+        body: JSON.stringify(attendance),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["meetings", id, "participants"] }),
+  });
+
   const paddingBottom = Platform.OS === "web" ? 34 : 0;
 
-  if (isLoading) return <LoadingSpinner />;
-  if (!meeting) return null;
+  // All hooks must be called before any early returns
+  const [comments, setComments] = useState<any[]>([]);
+  const [attendance, setAttendance] = useState<any[]>([]);
+  const [actionItems, setActionItems] = useState<any[]>([]);
+  const [newComment, setNewComment] = useState("");
 
-  const completedAgenda = meeting.agendaItems.filter((a) => a.isCompleted).length;
+  // Fetch comments
+  const { data: commentsData } = useQuery({
+    queryKey: ["meeting-comments", id],
+    queryFn: () => request<{ comments: any[] }>(`/meetings/${id}/comments`),
+    enabled: !!id,
+    refetchInterval: 5000,
+  });
+
+  // Fetch attendance (participants)
+  const { data: attendanceData, refetch: refetchAttendance } = useQuery({
+    queryKey: ["meeting-attendance", id],
+    queryFn: () => request<{ participants: any[] }>(`/meetings/${id}/participants`),
+    enabled: !!id,
+  });
+
+  // Fetch action items
+  const { data: actionItemsData, refetch: refetchActionItems } = useQuery({
+    queryKey: ["meeting-action-items", id],
+    queryFn: () => request<{ actionItems: any[] }>(`/meetings/${id}/action-items`),
+    enabled: !!id,
+  });
+
+  useEffect(() => {
+    if (commentsData?.comments) setComments(commentsData.comments);
+  }, [commentsData]);
+
+  useEffect(() => {
+    if (attendanceData?.participants) setAttendance(attendanceData.participants);
+  }, [attendanceData]);
+
+  useEffect(() => {
+    if (actionItemsData?.actionItems) setActionItems(actionItemsData.actionItems);
+  }, [actionItemsData]);
+
+  // Compute values after all hooks (avoid early returns to maintain hook order)
+  const completedAgenda = isLoading || !meeting ? 0 : meeting.agendaItems.filter((a) => a.isCompleted).length;
+
+  if (isLoading) {
+    return <LoadingSpinner />;
+  }
+
+  if (!meeting) {
+    return null;
+  }
+
+  const attendedCount = attendance.filter((a) => a.status === "ATTENDED").length;
+  const pendingActionItems = actionItems.filter((a) => a.status === "PENDING").length;
 
   const TABS = [
     { key: "info", label: "Info" },
     { key: "agenda", label: `Agenda (${meeting.agendaItems.length})` },
     { key: "participants", label: `People (${meeting.participants.length})` },
+    { key: "attendance", label: `Attendance (${attendedCount}/${attendance.length})` },
+    { key: "actionItems", label: `Action Items (${pendingActionItems})` },
+    { key: "comments", label: `Comments (${comments.length})` },
     { key: "resolutions", label: `Votes (${meeting.resolutions?.length ?? 0})` },
   ] as const;
 
@@ -341,6 +413,217 @@ export default function MeetingDetailScreen() {
               )}
             </View>
           )}
+
+          {/* Attendance Tab */}
+          {activeTab === "attendance" && (
+            <View style={{ gap: 10 }}>
+              {attendance.length === 0 ? (
+                <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
+                  No attendance records yet
+                </Text>
+              ) : (
+                attendance.map((attendee) => (
+                  <Card key={attendee.userId} style={styles.attendeeCard}>
+                    <View style={styles.attendeeRow}>
+                      <View style={[styles.pAvatar, { backgroundColor: colors.secondary }]}>
+                        <Text style={[styles.pAvatarText, { color: colors.foreground }]}>
+                          {attendee.user?.name?.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)}
+                        </Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.pName, { color: colors.foreground }]}>
+                          {attendee.user?.name}
+                        </Text>
+                        <Text style={[styles.pRole, { color: colors.mutedForeground }]}>
+                          {attendee.user?.email}
+                        </Text>
+                      </View>
+                      <View style={[
+                        styles.attendanceBadge,
+                        {
+                          backgroundColor:
+                            attendee.status === "ATTENDED" ? colors.successLight :
+                            attendee.status === "ABSENT" ? colors.errorLight :
+                            attendee.status === "EXCUSED" ? colors.warningLight :
+                            colors.secondary
+                        }
+                      ]}>
+                        <Text style={{
+                          fontSize: 11,
+                          fontFamily: "Inter_600SemiBold",
+                          color:
+                            attendee.status === "ATTENDED" ? colors.success :
+                            attendee.status === "ABSENT" ? colors.destructive :
+                            attendee.status === "EXCUSED" ? colors.warning :
+                            colors.mutedForeground
+                        }}>
+                          {attendee.status}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.attendanceActions}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onPress={() => attendanceMutation.mutate({ userId: attendee.userId, status: "ATTENDED" })}
+                        loading={attendanceMutation.isPending}
+                      >
+                        Present
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onPress={() => attendanceMutation.mutate({ userId: attendee.userId, status: "ABSENT" })}
+                        loading={attendanceMutation.isPending}
+                      >
+                        Absent
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onPress={() => attendanceMutation.mutate({ userId: attendee.userId, status: "EXCUSED" })}
+                        loading={attendanceMutation.isPending}
+                      >
+                        Excused
+                      </Button>
+                    </View>
+                  </Card>
+                ))
+              )}
+            </View>
+          )}
+
+          {/* Action Items Tab */}
+          {activeTab === "actionItems" && (
+            <View style={{ gap: 10 }}>
+              {actionItems.length === 0 ? (
+                <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
+                  No action items yet
+                </Text>
+              ) : (
+                actionItems.map((item: any) => (
+                  <Card key={item.id} style={styles.actionItemCard}>
+                    <View style={styles.actionItemHeader}>
+                      <Text style={[styles.actionItemTitle, { color: colors.foreground }]}>
+                        {item.title}
+                      </Text>
+                      <View style={[
+                        styles.actionItemStatus,
+                        {
+                          backgroundColor:
+                            item.status === "COMPLETED" ? colors.successLight :
+                            item.status === "IN_PROGRESS" ? colors.primaryLight :
+                            colors.warningLight
+                        }
+                      ]}>
+                        <Text style={{
+                          fontSize: 11,
+                          fontFamily: "Inter_600SemiBold",
+                          color:
+                            item.status === "COMPLETED" ? colors.success :
+                            item.status === "IN_PROGRESS" ? colors.primary :
+                            colors.warning
+                        }}>
+                          {item.status}
+                        </Text>
+                      </View>
+                    </View>
+                    {item.description && (
+                      <Text style={[styles.actionItemDesc, { color: colors.mutedForeground }]}>
+                        {item.description}
+                      </Text>
+                    )}
+                    <View style={styles.actionItemMeta}>
+                      <Feather name="user" size={14} color={colors.mutedForeground} />
+                      <Text style={[styles.actionItemMetaText, { color: colors.mutedForeground }]}>
+                        {item.assignee?.name || "Unassigned"}
+                      </Text>
+                    </View>
+                    {item.dueDate && (
+                      <View style={styles.actionItemMeta}>
+                        <Feather name="calendar" size={14} color={colors.mutedForeground} />
+                        <Text style={[styles.actionItemMetaText, { color: colors.mutedForeground }]}>
+                          Due: {new Date(item.dueDate).toLocaleDateString()}
+                        </Text>
+                      </View>
+                    )}
+                    <View style={styles.actionItemActions}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onPress={() => actionItemMutation.mutate({ actionItemId: item.id, status: "COMPLETED" })}
+                        loading={actionItemMutation.isPending}
+                      >
+                        Mark Complete
+                      </Button>
+                    </View>
+                  </Card>
+                ))
+              )}
+            </View>
+          )}
+
+          {/* Comments Tab */}
+          {activeTab === "comments" && (
+            <View style={{ gap: 10 }}>
+              {/* Comment Input */}
+              <Card style={styles.commentInputCard}>
+                <TextInput
+                  style={[styles.commentInput, {
+                    borderColor: colors.border,
+                    color: colors.foreground,
+                    backgroundColor: colors.background
+                  }]}
+                  placeholder="Add a comment..."
+                  placeholderTextColor={colors.mutedForeground}
+                  multiline
+                  numberOfLines={3}
+                  value={newComment}
+                  onChangeText={setNewComment}
+                />
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onPress={() => commentMutation.mutate(newComment)}
+                  loading={commentMutation.isPending}
+                  style={{ marginTop: 10 }}
+                  fullWidth
+                >
+                  Post Comment
+                </Button>
+              </Card>
+
+              {/* Comments List */}
+              {comments.length === 0 ? (
+                <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
+                  No comments yet. Be the first to comment!
+                </Text>
+              ) : (
+                comments.map((comment: any) => (
+                  <Card key={comment.id} style={styles.commentCard}>
+                    <View style={styles.commentHeader}>
+                      <View style={[styles.pAvatar, { backgroundColor: colors.secondary }]}>
+                        <Text style={[styles.pAvatarText, { color: colors.foreground }]}>
+                          {comment.user?.name?.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)}
+                        </Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.commentAuthor, { color: colors.foreground }]}>
+                          {comment.user?.name}
+                        </Text>
+                        <Text style={[styles.commentTime, { color: colors.mutedForeground }]}>
+                          {new Date(comment.createdAt).toLocaleString()}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={[styles.commentContent, { color: colors.foreground }]}>
+                      {comment.content}
+                    </Text>
+                  </Card>
+                ))
+              )}
+            </View>
+          )}
         </ScrollView>
       </View>
     </>
@@ -399,4 +682,22 @@ const styles = StyleSheet.create({
   voteCount: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
   voteActions: { flexDirection: "row", gap: 8 },
   emptyText: { textAlign: "center", fontSize: 14, fontFamily: "Inter_400Regular", paddingVertical: 32 },
+  attendeeCard: {},
+  attendeeRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  attendanceActions: { flexDirection: "row", gap: 8, marginTop: 10 },
+  actionItemCard: {},
+  actionItemHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 6 },
+  actionItemTitle: { flex: 1, fontSize: 15, fontFamily: "Inter_600SemiBold", fontWeight: "600" },
+  actionItemStatus: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 100 },
+  actionItemDesc: { fontSize: 13, fontFamily: "Inter_400Regular", marginBottom: 8 },
+  actionItemMeta: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 },
+  actionItemMetaText: { fontSize: 12, fontFamily: "Inter_400Regular" },
+  actionItemActions: { marginTop: 10 },
+  commentInputCard: {},
+  commentInput: { borderWidth: 1, borderRadius: 8, padding: 12, fontSize: 14, fontFamily: "Inter_400Regular", minHeight: 80, textAlignVertical: "top" },
+  commentCard: {},
+  commentHeader: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 },
+  commentAuthor: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  commentTime: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  commentContent: { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20 },
 });

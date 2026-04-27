@@ -7,13 +7,13 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
 
@@ -55,14 +55,14 @@ export default function LoginScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.header}>
-            <View style={[styles.logoWrap, { backgroundColor: colors.primary }]}>
-              <Text style={[styles.logoZ, { color: colors.gold }]}>Z</Text>
+            <View style={[styles.logoWrap, { backgroundColor: colors.cardForeground }]}>
+              <Image source={require("../assets/images/icon.png")} style={{ width: 50, height: 50 }} />
             </View>
             <Text style={[styles.bankName, { color: colors.foreground }]}>
-              Zemen Bank
+              BoD Portal
             </Text>
             <Text style={[styles.appName, { color: colors.mutedForeground }]}>
-              Fit & Proper System
+              Board of Directors Portal
             </Text>
           </View>
 
@@ -137,16 +137,10 @@ export default function LoginScreen() {
                 </Text>
               )}
             </Pressable>
-
-            <Pressable style={styles.forgotBtn}>
-              <Text style={[styles.forgotText, { color: colors.primary }]}>
-                Forgot password?
-              </Text>
-            </Pressable>
           </View>
 
           <Text style={[styles.footer, { color: colors.mutedForeground }]}>
-            Zemen Bank S.C. - Fit & Proper Assessment System
+            Zemen Bank S.C. - BOD Portal
           </Text>
         </ScrollView>
       </KeyboardAvoidingView>

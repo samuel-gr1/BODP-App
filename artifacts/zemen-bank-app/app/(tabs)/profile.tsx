@@ -88,11 +88,6 @@ export default function ProfileScreen() {
             onPress={() => router.push("/(tabs)/meetings")}
           />
           <MenuRow
-            icon="credit-card"
-            label="QR Business Card"
-            onPress={() => router.push("/qr-card")}
-          />
-          <MenuRow
             icon="users"
             label="Related Parties"
             onPress={() => router.push("/related-parties")}
